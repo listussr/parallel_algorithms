@@ -1,21 +1,9 @@
 /*
- * Этап 3. Автоматическое распараллеливание (OpenMP-рантайм, без директив).
- *
- * Алгоритм - блочное LU через GAXPY (как на этапах 1-2). Ни одной директивы
- * #pragma omp: параллельные циклы находит сам gcc (pass "parloops") по ключу
- *     -ftree-parallelize-loops=P
- * и выносит их в потоки libgomp. Число потоков P задаётся при компиляции,
- * поэтому программа собирается для P = 1..8 (P передаётся и в -DNTHREADS
- * только для печати):
- *   gcc -O2 -ftree-parallelize-loops=4 -DNTHREADS=4 stage3_autopar.c -o stage3_autopar4.exe
- * Отчёт о распараллеленных циклах: -fopt-info-loop-optimized.
- *
- * Чтобы gcc смог доказать независимость итераций внешнего цикла GAXPY, данные
- * разнесены по разным restrict-массивам: строки L берутся через массив
- * указателей, U и панель P - отдельные плотные буферы.
- *
- * Запуск:  stage3_autopar4.exe [n1 n2 ...]
- * Вывод (CSV): n,threads,r,time,err,res
+ * Этап 3. Автораспараллеливание GCC, без директив OpenMP.
+ * Строки L передаются через массив указателей, U и P — отдельные буферы:
+ * это помогает компилятору анализировать независимость строк GAXPY.
+ * Число потоков задаёт флаг сборки; NTHREADS только подписывает CSV.
+ * Сборка и запуск — README.md; методика и результаты — REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,8 +24,8 @@ static double wtime(void)
     return (double)c.QuadPart / (double)f.QuadPart;
 }
 
-/* 1) U(k x w) = L11^{-1} U  (L11 = A(0:k,0:k), унитреугольная):
-      U(i,:) -= L(i,j) * U(j,:), j < i */
+/* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
+ * Строка U(i,:) зависит от уже вычисленных U(j,:), j < i. */
 static void trsm(int n, int k, int w, const double *restrict A, double *restrict U)
 {
     for (int i = 1; i < k; i++) {
@@ -52,8 +40,8 @@ static void trsm(int n, int k, int w, const double *restrict A, double *restrict
     }
 }
 
-/* 2) P(m x w) -= L(m x k) * U(k x w) - блочный GAXPY.
-      Строки P независимы -> внешний цикл по i распараллеливается gcc. */
+/* P -= L*U: итерации по i обновляют разные строки P и только читают L, U.
+ * Фактическое распараллеливание зависит от сборки GCC. */
 static void gaxpy(int m, int k, int w, const double *const *restrict L,
                   const double *restrict U, double *restrict P)
 {
@@ -83,6 +71,8 @@ static void panel_lu(int m, int w, double *restrict P)
     }
 }
 
+/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
+ * Буферы вмещают n*r элементов, но текущий шаг строки в них равен w. */
 void block_lu_gaxpy(int n, int r, double *A)
 {
     double *U = malloc((size_t)n * r * sizeof(double));

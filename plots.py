@@ -1,5 +1,9 @@
-"""Запуск программ всех этапов и построение графиков.
-Использование: sh build.sh && python plots.py   -> results/*.csv, results/*.png"""
+"""Запустить все эксперименты и перезаписать их CSV и PNG в results/.
+
+Запуск из корня репозитория после sh build.sh: python plots.py.
+Требуются Matplotlib и доступная в PATH команда mpiexec.
+Готовые CSV скрипт не переиспользует.
+"""
 import csv, io, os, subprocess
 import matplotlib
 matplotlib.use("Agg")
@@ -45,7 +49,7 @@ plt.plot(NS, [a["time"] / b["time"] for a, b in zip(nv, v)], "o-",
 plt.axhline(1, color="k", lw=.8, ls="--")
 fig("stage2_vec_speedup.png", "n", "ускорение T_novec / T_vec", "Этап 2. Ускорение от векторизации")
 
-# ---- Этап 3: автоматическое распараллеливание ----
+# ---- Этап 3: база — сборка этого же этапа с одним потоком ----
 t3 = {}
 for p in PS:
     for r in run([exe(f"stage3_autopar{p}.exe"), *map(str, NP)], f"stage3_autopar{p}.csv"):
@@ -56,7 +60,7 @@ plt.plot(PS, PS, "k--", lw=.8, label="идеальное")
 fig("stage3_autopar_speedup.png", "число потоков", "ускорение T1 / Tp",
     "Этап 3. Автораспараллеливание gcc")
 
-# ---- Этап 4: MPI ----
+# ---- Этап 4: база — MPI с одним процессом, включая его накладные расходы ----
 t4 = {}
 for p in PS:
     for r in run(["mpiexec", "-n", str(p), exe("stage4_mpi.exe"), *map(str, NP)], f"stage4_mpi_p{p}.csv"):

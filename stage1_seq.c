@@ -1,21 +1,8 @@
 /*
- * Этап 1. Последовательный алгоритм.
- * Вариант 5: блочное LU-разложение через GAXPY (left-looking, jki-форма).
- *
- * A = L*U, L - нижняя унитреугольная, U - верхняя; без выбора ведущего элемента
- * (матрица генерируется с диагональным преобладанием). L и U записываются на место A.
- *
- * Для каждого блочного столбца K = [k, k+w):
- *   1) U(0:k, K)  = L(0:k,0:k)^{-1} A(0:k, K)   - треугольное решение в форме gaxpy
- *   2) A(k:n, K) -= L(k:n, 0:k) * U(0:k, K)      - блочный GAXPY
- *   3) неблочное LU панели A(k:n, K) в jki (gaxpy) форме
- *
- * Погрешность: решается A x = b с точным решением x* = (1,...,1),
- *   err = ||x - x*||_inf,  res = ||A x - b||_inf / ||b||_inf.
- *
- * Сборка:  gcc -O2 stage1_seq.c -o stage1_seq.exe
- * Запуск:  stage1_seq.exe [n1 n2 ...]
- * Вывод (CSV): n,r,time,err,res
+ * Этап 1. Последовательное блочное LU через GAXPY (left-looking, jki).
+ * Единичная диагональ L не записывается.
+ * Выбора ведущего элемента и проверки нулевых пивотов нет.
+ * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +20,7 @@ static double wtime(void)
     return (double)c.QuadPart / (double)f.QuadPart;
 }
 
+/* A хранится по строкам: ниже диагонали — L, на диагонали и выше — U. */
 #define a(i, j) A[(size_t)(i) * n + (j)]
 
 void block_lu_gaxpy(int n, int r, double *A)
@@ -90,6 +78,7 @@ static void run(int n)
 
     srand(12345);
     for (size_t i = 0; i < (size_t)n * n; i++) A0[i] = (double)rand() / RAND_MAX - 0.5;
+    /* Сдвиг диагонали не гарантирует строгого диагонального преобладания. */
     for (int i = 0; i < n; i++) A0[(size_t)i * n + i] += n / 4.0;
     for (int i = 0; i < n; i++) {           /* b = A x*, x* = (1,...,1) */
         double s = 0;

@@ -3,6 +3,7 @@
 set -e
 mkdir -p bin
 B="-std=gnu99 -msse2 -mfpmath=sse"
+# Путь в формате Git Bash; Lib/x86 ниже требует компилятор той же разрядности.
 M="/c/Program Files (x86)/Microsoft SDKs/MPI"
 
 # Этап 1: последовательная программа
@@ -12,7 +13,7 @@ gcc $B -O2 -fno-tree-vectorize stage1_seq.c -o bin/stage1_seq.exe
 gcc $B -O2 -fno-tree-vectorize           stage2_vec.c -o bin/stage2_novec.exe
 gcc $B -O3 -ftree-vectorize -mavx2 -mfma stage2_vec.c -o bin/stage2_vec.exe
 
-# Этап 3: автоматическое распараллеливание, P = 1..8 потоков
+# Этап 3: P задаёт флаг компилятора; NTHREADS только подписывает CSV.
 for p in 1 2 3 4 5 6 7 8; do
   gcc $B -O2 -fno-tree-vectorize -ftree-parallelize-loops=$p -DNTHREADS=$p \
       stage3_autopar.c -o bin/stage3_autopar$p.exe

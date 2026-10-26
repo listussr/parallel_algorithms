@@ -1,21 +1,9 @@
 /*
- * Этап 4. MPI-программа. Вариант 5: блочное LU-разложение через GAXPY.
- *
- * Матрица хранится целиком на каждом процессе (после MPI_Bcast).
- * Для каждого блочного столбца K = [k, k+w):
- *   1) U(0:k,K) = L11^{-1} A(0:k,K): столбцы блока делятся между процессами,
- *      каждый решает треугольную систему для своих столбцов, затем MPI_Allgatherv;
- *   2) GAXPY A(k:n,K) -= L(k:n,0:k) U(0:k,K): строки делятся между процессами,
- *      затем MPI_Allgatherv собранной панели;
- *   3) неблочное LU панели (O(n r^2)) — избыточно на каждом процессе.
- *
- * Процесс 0 генерирует матрицу и рассылает её (MPI_Bcast), после разложения
- * проверяет решение A x = b (x* = (1,...,1)).
- *
- * Сборка (MS-MPI + MinGW):
- *   gcc -O2 -Iinclude -I"%MSMPI_INC%" -D"__int64=long long" stage4_mpi.c -L"%MSMPI_LIB32%" -lmsmpi
- * Запуск:  mpiexec -n P stage4_mpi.exe [n1 n2 ...]
- * Вывод (CSV, rank 0): procs,n,r,time,err,res
+ * Этап 4. MPI: полная матрица есть у каждого процесса.
+ * Треугольное решение делится по столбцам, GAXPY — по строкам панели;
+ * после обменов каждый процесс выполняет LU всей панели.
+ * Генерация матрицы, проверка решения и вывод CSV — только на процессе 0.
+ * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
  */
 #include <mpi.h>
 #include <stdio.h>
@@ -26,6 +14,8 @@
 #define REPS 3
 static int rank, size;
 
+/* Непрерывные участки: первые total % parts получают по элементу сверх частного.
+ * При total < parts некоторые процессы получают пустой участок. */
 static void split(int total, int parts, int *cnt, int *off)
 {
     for (int p = 0, o = 0; p < parts; p++) {
@@ -79,7 +69,8 @@ void block_lu_gaxpy_mpi(int n, int r, double *A)
             }
             for (int p = 0; p < size; p++) { cc[p] = cnt[p] * k; co[p] = off[p] * k; }
             MPI_Allgatherv(buf, cc[rank], MPI_DOUBLE, U, cc, co, MPI_DOUBLE, MPI_COMM_WORLD);
-            /* распаковка в A и в плотный блок U (k x w) */
+            /* Allgatherv собрал подряд локальные блоки k x cnt[p], а не строки U.
+             * Через A переупаковываем их в общий блок k x w. */
             for (int p = 0; p < size; p++)
                 for (int i = 0; i < k; i++)
                     for (int c = 0; c < cnt[p]; c++)
@@ -103,12 +94,14 @@ void block_lu_gaxpy_mpi(int n, int r, double *A)
                 }
             }
             for (int p = 0; p < size; p++) { rc[p] = cnt[p] * w; ro[p] = off[p] * w; }
+            /* Свои строки уже лежат в P по смещению ro[rank], как требует IN_PLACE. */
             MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, P, rc, ro, MPI_DOUBLE, MPI_COMM_WORLD);
         } else {
+            /* У первого блока нет предшествующих столбцов: обновление не требуется. */
             for (int i = 0; i < n; i++)
                 for (int c = 0; c < w; c++) P[(size_t)i * w + c] = A[(size_t)i * n + c];
         }
-        /* ---- 3) LU панели (в плотном буфере P) ---- */
+        /* Все процессы имеют одну панель P и независимо получают одинаковое LU. */
         panel_lu(n - k, w, P);
         for (int i = 0; i < n - k; i++)
             for (int c = 0; c < w; c++) A[(size_t)(k + i) * n + k + c] = P[(size_t)i * w + c];
@@ -139,6 +132,7 @@ static void run(int n)
     for (int rep = 0; rep < REPS; rep++) {
         if (rank == 0)
             for (size_t i = 0; i < (size_t)n * n; i++) A[i] = A0[i];
+        /* Рассылка исходной матрицы вне замера; конечный барьер входит во время. */
         MPI_Bcast(A, n * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD);
         double t = MPI_Wtime();

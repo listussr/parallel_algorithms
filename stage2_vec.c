@@ -1,20 +1,8 @@
 /*
- * Этап 2. Векторизация блочного LU через GAXPY средствами gcc.
- *
- * Алгоритм тот же, что на этапе 1, но код подготовлен для автовекторизатора:
- *   - блок U(0:k,K) и панель A(k:n,K) копируются в плотные буферы U и P
- *     (строки длины w лежат подряд, шаг 1 по памяти во внутренних циклах);
- *   - указатели помечены restrict, чтобы gcc не опасался перекрытия.
- * Самый внутренний цикл во всех трёх шагах - axpy  y(0:w) -= l * x(0:w),
- * который gcc векторизует (AVX2 + FMA: 4 double за такт).
- *
- * Одна и та же программа собирается двумя способами:
- *   gcc -O2 -fno-tree-vectorize           stage2_vec.c -o stage2_novec.exe   (база)
- *   gcc -O3 -ftree-vectorize -mavx2 -mfma stage2_vec.c -o stage2_vec.exe     (вектор.)
- * Отчёт векторизатора: добавить -fopt-info-vec-optimized.
- *
- * Запуск:  stage2_vec.exe [n1 n2 ...]
- * Вывод (CSV): n,r,time,err,res
+ * Этап 2. Блочное LU через GAXPY с плотными буферами U и P.
+ * В треугольном решении и GAXPY внутренний цикл идёт по соседним элементам;
+ * restrict описывает отсутствие перекрытия данных для автовекторизатора.
+ * Сравниваются две сборки этого файла. Флаги и запуск — README.md, REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,8 +20,8 @@ static double wtime(void)
     return (double)c.QuadPart / (double)f.QuadPart;
 }
 
-/* 1) U(k x w) = L11^{-1} U  (L11 = A(0:k,0:k), унитреугольная):
-      U(i,:) -= L(i,j) * U(j,:), j < i */
+/* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
+ * Строка U(i,:) зависит от уже вычисленных U(j,:), j < i. */
 static void trsm(int n, int k, int w, const double *restrict A, double *restrict U)
 {
     for (int i = 1; i < k; i++) {
@@ -42,7 +30,7 @@ static void trsm(int n, int k, int w, const double *restrict A, double *restrict
         for (int j = 0; j < i; j++) {
             double l = li[j];
             const double *restrict uj = U + (size_t)j * w;
-            for (int c = 0; c < w; c++)      /* векторизуется */
+            for (int c = 0; c < w; c++)
                 ui[c] -= l * uj[c];
         }
     }
@@ -58,7 +46,7 @@ static void gaxpy(int n, int k, int m, int w, const double *restrict A,
         for (int j = 0; j < k; j++) {
             double l = li[j];
             const double *restrict uj = U + (size_t)j * w;
-            for (int c = 0; c < w; c++)      /* векторизуется */
+            for (int c = 0; c < w; c++)
                 pi[c] -= l * uj[c];
         }
     }
@@ -79,6 +67,8 @@ static void panel_lu(int m, int w, double *restrict P)
     }
 }
 
+/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
+ * Буферы вмещают n*r элементов, но текущий шаг строки в них равен w. */
 void block_lu_gaxpy(int n, int r, double *A)
 {
     double *U = malloc((size_t)n * r * sizeof(double));
