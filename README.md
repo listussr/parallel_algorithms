@@ -6,9 +6,10 @@
 
 | Этап | Программа | Что исследуется | Подробное описание |
 |---|---|---|---|
+| — | — | теория: метод Гаусса в матричной форме, вывод формул, существование, трудоёмкость, устойчивость | [docs/00_lu_theory.md](docs/00_lu_theory.md) |
 | 1 | [stage1_seq.c](stage1_seq.c) | последовательный алгоритм, рост погрешности с размерностью | [docs/01_sequential.md](docs/01_sequential.md) |
 | 2 | [stage2_vec.c](stage2_vec.c) | автовекторизация GCC (AVX2 + FMA), ускорение | [docs/02_vectorization.md](docs/02_vectorization.md) |
-| 3 | [stage3_autopar.c](stage3_autopar.c) | автоматическое распараллеливание GCC (OpenMP-рантайм без директив) | [docs/03_autopar.md](docs/03_autopar.md) |
+| 3 | [stage3_omp.c](stage3_omp.c) | OpenMP: `#pragma omp parallel for`, итерации распределяет OpenMP | [docs/03_openmp.md](docs/03_openmp.md) |
 | 4 | [stage4_mpi.c](stage4_mpi.c) | MPI-программа, ускорение от числа процессов и размера матрицы | [docs/04_mpi.md](docs/04_mpi.md) |
 
 ---
@@ -50,16 +51,17 @@ A_{k:n,\,K} = L_{k:n,\,K}\; U_{K,\,K}.
 $$
 
 Общая стоимость — $\frac23 n^3$ флопов: по $\frac{n^3}{3}$ на шаги 1 и 2 и $O(n^2 r)$ на шаг 3.
-Вывод формул, схема и анализ погрешности — в [docs/01_sequential.md](docs/01_sequential.md).
+Полный математический вывод — в [docs/00_lu_theory.md](docs/00_lu_theory.md),
+блочный алгоритм, схема и анализ погрешности — в [docs/01_sequential.md](docs/01_sequential.md).
 
 ### Чем отличаются этапы
 
 | | Этап 1 | Этап 2 | Этап 3 | Этап 4 |
 |---|---|---|---|---|
-| Данные шагов 1–2 | прямо в $A$ | буферы $U$, $P$ + `restrict` | как этап 2 + массив указателей на строки $L$ | полная копия $A$ у каждого процесса |
-| Параллелизм | — | SIMD внутри строки блока (4 `double`) | потоки по строкам GAXPY | процессы: шаг 1 по столбцам, шаг 2 по строкам |
-| Шаг 1 (TRSM) | последовательно | векторизован | **последовательно** (компилятор не нашёл параллелизм) | распределён по столбцам |
-| Шаг 3 (LU панели) | последовательно | скалярно | частично (внутренние циклы) | целиком на каждом процессе |
+| Данные шагов 1–2 | прямо в $A$ | буферы $U$, $P$ + `restrict` | как этап 2 | полная копия $A$ у каждого процесса |
+| Параллелизм | — | SIMD внутри строки блока (4 `double`) | потоки OpenMP (`parallel for`) | процессы: шаг 1 по столбцам, шаг 2 по строкам |
+| Шаг 1 (TRSM) | последовательно | векторизован | потоки по порциям из 8 столбцов (до 4 потоков) | распределён по столбцам |
+| Шаг 3 (LU панели) | последовательно | скалярно | потоки по строкам внутри каждого столбца | целиком на каждом процессе |
 | Ускорение считается | — | $T_\text{novec}/T_\text{vec}$ | $T_{P=1}/T_P$ | $T_{p=1}/T_p$ |
 
 ---
@@ -80,12 +82,12 @@ $1{,}55 \cdot 10^{-15}$ при $n = 100$ и $1{,}27 \cdot 10^{-14}$ при $n = 
 | Этап | $n = 500$ | $n = 1000$ | $n = 3000$ | Главное ограничение |
 |---|---|---|---|---|
 | 2. Векторизация | 2,81 | 1,84 | 1,99 | скорость чтения блока $U$ из кэша |
-| 3. Автораспараллеливание | 1,39 ($P = 8$) | 1,22 ($P = 4$) | 1,31 ($P = 7$) | последовательное треугольное решение: по Амдалу $S < 2$ |
+| 3. OpenMP | 1,22 ($P = 2$) | 2,08 ($P = 4$) | 2,65 ($P = 4$) | память, 4 физических ядра, накладные расходы fork–join на малых $n$ |
 | 4. MPI | 1,82 ($p = 3$) | 1,66 ($p = 3$) | 1,96 ($p = 3$) | общая память и 4 физических ядра |
 
-| Векторизация | Автораспараллеливание | MPI |
+| Векторизация | OpenMP | MPI |
 |---|---|---|
-| ![](results/stage2_vec_speedup.png) | ![](results/stage3_autopar_speedup.png) | ![](results/stage4_mpi_speedup_p.png) |
+| ![](results/stage2_vec_speedup.png) | ![](results/stage3_omp_speedup_p.png) | ![](results/stage4_mpi_speedup_p.png) |
 
 Подробный разбор каждого результата — в соответствующем файле из [docs/](docs).
 
@@ -107,8 +109,8 @@ $1{,}55 \cdot 10^{-15}$ при $n = 100$ и $1{,}27 \cdot 10^{-14}$ при $n = 
 ## Требования
 
 * Windows и оболочка с путями вида `/c/...` (например, Git Bash);
-* MinGW GCC (проверено на 9.2) с пакетом `pthreads-w32` — без него не собираются
-  программы с `-ftree-parallelize-loops`;
+* MinGW GCC (проверено на 9.2) с пакетом `pthreads-w32` — без него не собирается
+  программа с `-fopenmp`;
 * MS-MPI SDK и MS-MPI Runtime (`mpiexec`);
 * для векторной сборки — процессор с AVX2 и FMA;
 * для графиков — Python 3 и Matplotlib.
@@ -124,14 +126,14 @@ sh build.sh
 ```
 
 Создаются `bin/stage1_seq.exe`, `bin/stage2_novec.exe`, `bin/stage2_vec.exe`,
-`bin/stage3_autopar1.exe` … `bin/stage3_autopar8.exe` и `bin/stage4_mpi.exe`.
+`bin/stage3_omp.exe` и `bin/stage4_mpi.exe`.
 
 | Программа | Флаги |
 |---|---|
 | `stage1_seq` | `-O2 -fno-tree-vectorize` |
 | `stage2_novec` | `-O2 -fno-tree-vectorize` |
 | `stage2_vec` | `-O3 -ftree-vectorize -mavx2 -mfma` |
-| `stage3_autopar$P` | `-O2 -fno-tree-vectorize -ftree-parallelize-loops=$P` |
+| `stage3_omp` | `-O2 -fno-tree-vectorize -fopenmp` |
 | `stage4_mpi` | `-O2 -fno-tree-vectorize`, библиотека `msmpi` |
 
 Общие флаги: `-std=gnu99 -msse2 -mfpmath=sse`.
@@ -144,7 +146,7 @@ sh build.sh
 ./bin/stage1_seq.exe 100 500 1000
 ./bin/stage2_novec.exe 100 500 1000
 ./bin/stage2_vec.exe 100 500 1000
-./bin/stage3_autopar4.exe 500 1000
+OMP_NUM_THREADS=4 ./bin/stage3_omp.exe 500 1000
 mpiexec -n 4 ./bin/stage4_mpi.exe 500 1000
 ```
 
@@ -152,8 +154,8 @@ mpiexec -n 4 ./bin/stage4_mpi.exe 500 1000
 этап 4 — `500, 1000, 2000, 3000`. Аргументы не проверяются; память растёт как $O(n^2)$,
 в MPI полная матрица хранится у каждого процесса.
 
-Число потоков этапа 3 задаётся при компиляции (`stage3_autopar4.exe` собран с
-`-ftree-parallelize-loops=4`), число процессов MPI — ключом `mpiexec -n`.
+Число потоков этапа 3 задаётся переменной окружения `OMP_NUM_THREADS`,
+число процессов MPI — ключом `mpiexec -n`.
 
 Каждая программа печатает CSV (в MPI — только процесс 0):
 
@@ -164,7 +166,7 @@ mpiexec -n 4 ./bin/stage4_mpi.exe 500 1000
 | `time` | минимальное время разложения из трёх повторов, с |
 | `err` | $\lVert x - x^* \rVert_\infty$, где $x^* = (1, \dots, 1)$ |
 | `res` | $\lVert A_0 x - b \rVert_\infty \,/\, \lVert b \rVert_\infty$ |
-| `threads` | параметр $P$ сборки (только этап 3) |
+| `threads` | число потоков OpenMP (только этап 3) |
 | `procs` | число MPI-процессов (только этап 4) |
 
 ## Полный эксперимент

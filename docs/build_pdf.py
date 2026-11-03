@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "docs")
 OUT = os.path.join(DOCS, "lu_gaxpy.pdf")
 REPO = "https://github.com/listussr/parallel_algorithms/blob/main/"
-FILES = ["01_sequential.md", "02_vectorization.md", "03_autopar.md", "04_mpi.md"]
+FILES = ["00_lu_theory.md", "01_sequential.md", "02_vectorization.md", "03_openmp.md", "04_mpi.md"]
 BROWSERS = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"]
 KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
@@ -173,7 +173,7 @@ def build_html():
   </div>
   <div class="formula"><span class="tex" data-display="1">A = L\\,U</span></div>
   <div class="meta">
-    Последовательный алгоритм · Векторизация · Автоматическое распараллеливание · MPI<br>
+    Теория · Последовательный алгоритм · Векторизация · Автоматическое распараллеливание · MPI<br>
     Intel Core i5-1135G7 · MinGW GCC 9.2 · MS-MPI
   </div>
 </div>

@@ -16,9 +16,10 @@ NP = [500, 1000, 2000, 3000]                              # этапы 3-4
 PS = list(range(1, 9))
 
 
-def run(cmd, out):
+def run(cmd, out, env=None):
     """Запустить программу, сохранить её CSV-вывод и вернуть строки."""
-    text = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    text = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                          env=None if env is None else {**os.environ, **env}).stdout
     with open(os.path.join(R, out), "w", newline="") as f:
         f.write(text)
     return [{k: float(v) for k, v in row.items()} for row in csv.DictReader(io.StringIO(text))]
@@ -49,16 +50,20 @@ plt.plot(NS, [a["time"] / b["time"] for a, b in zip(nv, v)], "o-",
 plt.axhline(1, color="k", lw=.8, ls="--")
 fig("stage2_vec_speedup.png", "n", "ускорение T_novec / T_vec", "Этап 2. Ускорение от векторизации")
 
-# ---- Этап 3: база — сборка этого же этапа с одним потоком ----
+# ---- Этап 3: OpenMP, база — та же программа с одним потоком ----
 t3 = {}
 for p in PS:
-    for r in run([exe(f"stage3_autopar{p}.exe"), *map(str, NP)], f"stage3_autopar{p}.csv"):
+    for r in run([exe("stage3_omp.exe"), *map(str, NP)], f"stage3_omp_t{p}.csv",
+                 env={"OMP_NUM_THREADS": str(p)}):
         t3[int(r["n"]), p] = r["time"]
 for n in NP:
     plt.plot(PS, [t3[n, 1] / t3[n, p] for p in PS], "o-", label=f"n={n}")
 plt.plot(PS, PS, "k--", lw=.8, label="идеальное")
-fig("stage3_autopar_speedup.png", "число потоков", "ускорение T1 / Tp",
-    "Этап 3. Автораспараллеливание gcc")
+fig("stage3_omp_speedup_p.png", "число потоков", "ускорение T1 / Tp",
+    "Этап 3. OpenMP: ускорение от числа потоков")
+for p in [2, 4, 6, 8]:
+    plt.plot(NP, [t3[n, 1] / t3[n, p] for n in NP], "o-", label=f"p={p}")
+fig("stage3_omp_speedup_n.png", "n", "ускорение T1 / Tp", "Этап 3. OpenMP: ускорение от размера матрицы")
 
 # ---- Этап 4: база — MPI с одним процессом, включая его накладные расходы ----
 t4 = {}

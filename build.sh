@@ -13,11 +13,8 @@ gcc $B -O2 -fno-tree-vectorize stage1_seq.c -o bin/stage1_seq.exe
 gcc $B -O2 -fno-tree-vectorize           stage2_vec.c -o bin/stage2_novec.exe
 gcc $B -O3 -ftree-vectorize -mavx2 -mfma stage2_vec.c -o bin/stage2_vec.exe
 
-# Этап 3: P задаёт флаг компилятора; NTHREADS только подписывает CSV.
-for p in 1 2 3 4 5 6 7 8; do
-  gcc $B -O2 -fno-tree-vectorize -ftree-parallelize-loops=$p -DNTHREADS=$p \
-      stage3_autopar.c -o bin/stage3_autopar$p.exe
-done
+# Этап 3: OpenMP (#pragma omp parallel for); число потоков — OMP_NUM_THREADS при запуске
+gcc $B -O2 -fno-tree-vectorize -fopenmp stage3_omp.c -o bin/stage3_omp.exe
 
 # Этап 4: MPI
 gcc $B -O2 -fno-tree-vectorize -Iinclude -I"$M/Include" -D"__int64=long long" \
