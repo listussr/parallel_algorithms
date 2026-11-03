@@ -7,11 +7,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <windows.h>
 
 #define R    32
 #define REPS 3
 
+#ifdef _WIN32
+#include <windows.h>
 static double wtime(void)
 {
     LARGE_INTEGER f, c;
@@ -19,6 +20,15 @@ static double wtime(void)
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart / (double)f.QuadPart;
 }
+#else
+#include <time.h>
+static double wtime(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
+}
+#endif
 
 /* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
  * Строка U(i,:) зависит от уже вычисленных U(j,:), j < i. */

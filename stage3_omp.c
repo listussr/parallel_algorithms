@@ -7,16 +7,19 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
-#include <malloc.h>
 #include <math.h>
 #include <omp.h>
-#include <windows.h>
 
 #define R    32
 #define REPS 3
 #define CB   8    /* столбцов в порции TRSM: 8 double = одна кэш-линия */
 
 /* omp_get_wtime в MinGW GCC 9.2 имеет разрешение около 1 мс. */
+#ifdef _WIN32
+#include <malloc.h>
+#define alloc64(size) _aligned_malloc(size, 64)
+#define free64(p)     _aligned_free(p)
+#include <windows.h>
 static double wtime(void)
 {
     LARGE_INTEGER f, c;
@@ -24,6 +27,21 @@ static double wtime(void)
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart / (double)f.QuadPart;
 }
+#else
+#include <time.h>
+static double wtime(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
+}
+static void *alloc64(size_t size)
+{
+    void *p;
+    return posix_memalign(&p, 64, size) ? NULL : p;
+}
+#define free64(p) free(p)
+#endif
 
 /* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
  * Строки U зависят друг от друга, а столбцы независимы, поэтому параллельный
@@ -87,7 +105,7 @@ static void panel_lu(int m, int w, double *restrict P)
 void block_lu_gaxpy(int n, int r, double *A)
 {
     /* U выровнен на 64 байта: порции CB столбцов TRSM не делят кэш-линии. */
-    double *U = _aligned_malloc((size_t)n * r * sizeof(double), 64);
+    double *U = alloc64((size_t)n * r * sizeof(double));
     double *P = malloc((size_t)n * r * sizeof(double));
     for (int k = 0; k < n; k += r) {
         int w = (k + r <= n) ? r : n - k, m = n - k;
@@ -109,7 +127,7 @@ void block_lu_gaxpy(int n, int r, double *A)
         for (int i = 0; i < m; i++)
             for (int c = 0; c < w; c++) A[(size_t)(k + i) * n + k + c] = P[(size_t)i * w + c];
     }
-    _aligned_free(U); free(P);
+    free64(U); free(P);
 }
 
 static void lu_solve(int n, const double *A, double *x)

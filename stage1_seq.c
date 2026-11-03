@@ -2,16 +2,16 @@
  * Этап 1. Последовательное блочное LU через GAXPY (left-looking, jki).
  * Единичная диагональ L не записывается.
  * Выбора ведущего элемента и проверки нулевых пивотов нет.
- * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <windows.h>
 
 #define R    32   /* размер блока */
 #define REPS 3    /* число повторов, берётся минимальное время */
 
+#ifdef _WIN32
+#include <windows.h>
 static double wtime(void)
 {
     LARGE_INTEGER f, c;
@@ -19,6 +19,15 @@ static double wtime(void)
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart / (double)f.QuadPart;
 }
+#else
+#include <time.h>
+static double wtime(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
+}
+#endif
 
 /* A хранится по строкам: ниже диагонали — L, на диагонали и выше — U. */
 #define a(i, j) A[(size_t)(i) * n + (j)]

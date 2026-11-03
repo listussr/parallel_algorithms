@@ -1,11 +1,11 @@
 """Сборка docs/*.md в один PDF: Markdown -> HTML (формулы KaTeX) -> PDF (headless Chrome).
 
 Использование (из корня репозитория):  python docs/build_pdf.py
-Нужны: Python-пакет markdown, Google Chrome или Microsoft Edge, доступ к cdn.jsdelivr.net
+Нужны: Python-пакеты markdown и pypdf, Google Chrome, Chromium или Microsoft Edge, доступ к cdn.jsdelivr.net
 и fonts.googleapis.com (KaTeX и шрифты подгружаются при печати).
 Результат: docs/lu_gaxpy.pdf
 """
-import base64, html, os, re, subprocess, sys, tempfile
+import base64, html, os, pathlib, re, shutil, subprocess, sys, tempfile
 import markdown
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +14,12 @@ OUT = os.path.join(DOCS, "lu_gaxpy.pdf")
 REPO = "https://github.com/listussr/parallel_algorithms/blob/main/"
 FILES = ["00_lu_theory.md", "01_sequential.md", "02_vectorization.md", "03_openmp.md", "04_mpi.md"]
 BROWSERS = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"]
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            *filter(None, map(shutil.which, ["google-chrome", "google-chrome-stable",
+                                             "chromium", "chromium-browser", "microsoft-edge"]))]
 KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
 
 
@@ -239,7 +244,7 @@ def main():
     subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
                     f"--user-data-dir={profile}", "--no-pdf-header-footer",
                     "--generate-pdf-document-outline", "--virtual-time-budget=20000",
-                    f"--print-to-pdf={OUT}", "file:///" + html_path.replace("\\", "/")],
+                    f"--print-to-pdf={OUT}", pathlib.Path(html_path).as_uri()],
                    check=True, timeout=180, capture_output=True)
     fix_outline(page_html)
     print("PDF:", OUT)

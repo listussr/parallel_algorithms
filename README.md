@@ -108,16 +108,34 @@ $1{,}55 \cdot 10^{-15}$ при $n = 100$ и $1{,}27 \cdot 10^{-14}$ при $n = 
 
 ## Требования
 
-* Windows и оболочка с путями вида `/c/...` (например, Git Bash);
-* MinGW GCC (проверено на 9.2) с пакетом `pthreads-w32` — без него не собирается
-  программа с `-fopenmp`;
-* MS-MPI SDK и MS-MPI Runtime (`mpiexec`);
-* для векторной сборки — процессор с AVX2 и FMA;
-* для графиков — Python 3 и Matplotlib.
+Проект собирается на Windows, Linux и macOS одним скриптом [build.sh](build.sh):
+он сам определяет ОС и архитектуру процессора.
 
-Путь к MS-MPI SDK задаётся переменной `M` в [build.sh](build.sh). Используются
-библиотеки `Lib/x86`: разрядность компилятора и библиотек должна совпадать.
-Первые три этапа замеряют время через `windows.h`; сборки под Linux в проекте нет.
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| оболочка | Git Bash | любая POSIX | любая POSIX |
+| компилятор | MinGW GCC (проверено на 9.2) + пакет `pthreads-w32` | `gcc` или `clang` | Apple clang + `libomp` или `gcc-N` из Homebrew |
+| MPI | MS-MPI SDK и Runtime | Open MPI или MPICH (`mpicc`, `mpiexec`) | Open MPI или MPICH из Homebrew |
+| графики | Python 3 + Matplotlib | то же | то же |
+| PDF | Chrome/Edge, пакеты `markdown`, `pypdf` | Chrome/Chromium | Chrome/Edge |
+
+Установка зависимостей:
+
+```sh
+# Ubuntu / Debian
+sudo apt install build-essential libopenmpi-dev openmpi-bin python3-matplotlib
+# Fedora
+sudo dnf install gcc openmpi-devel python3-matplotlib && module load mpi/openmpi-x86_64
+# macOS (Homebrew)
+brew install libomp open-mpi python && pip3 install matplotlib
+```
+
+На Windows путь к MS-MPI SDK задаётся переменной `M` в [build.sh](build.sh). Используются
+библиотеки `Lib/x86`: разрядность компилятора и библиотек должна совпадать. Без
+`pthreads-w32` MinGW не собирает программы с `-fopenmp`.
+
+Время замеряется через `QueryPerformanceCounter` на Windows и
+`clock_gettime(CLOCK_MONOTONIC)` на Linux/macOS, в MPI — через `MPI_Wtime`.
 
 ## Сборка
 
@@ -125,30 +143,45 @@ $1{,}55 \cdot 10^{-15}$ при $n = 100$ и $1{,}27 \cdot 10^{-14}$ при $n = 
 sh build.sh
 ```
 
-Создаются `bin/stage1_seq.exe`, `bin/stage2_novec.exe`, `bin/stage2_vec.exe`,
-`bin/stage3_omp.exe` и `bin/stage4_mpi.exe`.
+Компилятор можно заменить: `CC=clang sh build.sh`, `CC=gcc-14 sh build.sh`.
+
+Создаются `bin/stage1_seq`, `bin/stage2_novec`, `bin/stage2_vec`, `bin/stage3_omp`
+и `bin/stage4_mpi` — на Windows с расширением `.exe`.
 
 | Программа | Флаги |
 |---|---|
 | `stage1_seq` | `-O2 -fno-tree-vectorize` |
 | `stage2_novec` | `-O2 -fno-tree-vectorize` |
-| `stage2_vec` | `-O3 -ftree-vectorize -mavx2 -mfma` |
-| `stage3_omp` | `-O2 -fno-tree-vectorize -fopenmp` |
-| `stage4_mpi` | `-O2 -fno-tree-vectorize`, библиотека `msmpi` |
+| `stage2_vec` | `-O3 -ftree-vectorize -mavx2 -mfma` (на ARM — без `-mavx2 -mfma`, NEON и FMA там базовые) |
+| `stage3_omp` | `-O2 -fno-tree-vectorize -fopenmp` (Apple clang: `-Xpreprocessor -fopenmp -lomp`) |
+| `stage4_mpi` | `-O2 -fno-tree-vectorize`; `msmpi` на Windows, `mpicc` на Linux/macOS |
 
-Общие флаги: `-std=gnu99 -msse2 -mfpmath=sse`.
+Общий флаг — `-std=gnu99`. На Windows добавляются `-msse2 -mfpmath=sse`: 32-битный
+MinGW иначе считает на x87. У clang к «без векторизации» добавляется
+`-fno-slp-vectorize`.
 
 ## Запуск
 
-Программы принимают список размеров матриц:
+Программы принимают список размеров матриц. Linux и macOS:
+
+```sh
+./bin/stage1_seq 100 500 1000
+./bin/stage2_novec 100 500 1000
+./bin/stage2_vec 100 500 1000
+OMP_NUM_THREADS=4 ./bin/stage3_omp 500 1000
+mpiexec -n 4 ./bin/stage4_mpi 500 1000
+```
+
+Windows (Git Bash) — те же команды с `.exe`:
 
 ```sh
 ./bin/stage1_seq.exe 100 500 1000
-./bin/stage2_novec.exe 100 500 1000
-./bin/stage2_vec.exe 100 500 1000
 OMP_NUM_THREADS=4 ./bin/stage3_omp.exe 500 1000
 mpiexec -n 4 ./bin/stage4_mpi.exe 500 1000
 ```
+
+Open MPI не запускает процессов больше, чем ядер; для этого нужен ключ
+`mpiexec --oversubscribe -n 8 ...` (`plots.py` добавляет его сам).
 
 Без аргументов этапы 1–3 используют размеры `100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000`,
 этап 4 — `500, 1000, 2000, 3000`. Аргументы не проверяются; память растёт как $O(n^2)$,
@@ -173,12 +206,14 @@ mpiexec -n 4 ./bin/stage4_mpi.exe 500 1000
 
 ```sh
 sh build.sh
-python plots.py
+python plots.py            # на Linux/macOS: python3 plots.py
+python docs/build_pdf.py   # пересобрать PDF, если менялись docs/*.md
 ```
 
 Скрипт запускает все варианты (этап 3 — с 1–8 потоками, MPI — с 1–8 процессами),
 сохраняет CSV и строит графики в `results/`, **перезаписывая** прежние файлы.
-Скрипт не проверяет `err` и `res` — их стоит просмотреть в CSV.
+Результаты в репозитории получены на Intel i5-1135G7 под Windows; прогон на другой
+машине даст другие времена. Скрипт не проверяет `err` и `res` — их стоит просмотреть в CSV.
 
 ## Литература
 
