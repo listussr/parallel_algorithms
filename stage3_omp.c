@@ -1,5 +1,5 @@
 /*
- * Этап 3. OpenMP: блочное LU через GAXPY.
+ * Этап 3. OpenMP: блочное LU-разложение (Алгоритм 37).
  * Параллельные циклы помечены #pragma omp parallel for; итерации между
  * потоками распределяет сама OpenMP (schedule(static)), без ручного деления
  * по номеру потока. Число потоков задаёт OMP_NUM_THREADS.
@@ -10,15 +10,11 @@
 #include <math.h>
 #include <omp.h>
 
-#define R    32
-#define REPS 3
-#define CB   8    /* столбцов в порции TRSM: 8 double = одна кэш-линия */
+#define ALPHA 32
+#define REPS  3
 
 /* omp_get_wtime в MinGW GCC 9.2 имеет разрешение около 1 мс. */
 #ifdef _WIN32
-#include <malloc.h>
-#define alloc64(size) _aligned_malloc(size, 64)
-#define free64(p)     _aligned_free(p)
 #include <windows.h>
 static double wtime(void)
 {
@@ -35,99 +31,62 @@ static double wtime(void)
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (double)t.tv_sec + 1e-9 * (double)t.tv_nsec;
 }
-static void *alloc64(size_t size)
-{
-    void *p;
-    return posix_memalign(&p, 64, size) ? NULL : p;
-}
-#define free64(p) free(p)
 #endif
 
-/* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
- * Строки U зависят друг от друга, а столбцы независимы, поэтому параллельный
- * цикл идёт по порциям из CB столбцов: потоки пишут в разные кэш-линии. */
-static void trsm(int n, int k, int w, const double *restrict A, double *restrict U)
+static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
 {
-    #pragma omp parallel for schedule(static)
-    for (int cb = 0; cb < w; cb += CB) {
-        int ce = cb + CB < w ? cb + CB : w;
-        for (int i = 1; i < k; i++) {
-            const double *li = A + (size_t)i * n;
-            double *ui = U + (size_t)i * w;
-            for (int j = 0; j < i; j++) {
-                double l = li[j];
-                const double *uj = U + (size_t)j * w;
-                for (int c = cb; c < ce; c++)
-                    ui[c] -= l * uj[c];
-            }
-        }
-    }
+    for (int q = 0; q < m; q++)
+        y[q] -= s * x[q];
 }
 
-/* P(m x w) -= L(k:n, 0:k) * U(k x w): строки P независимы. */
-static void gaxpy(int n, int k, int m, int w, const double *restrict A,
-                  const double *restrict U, double *restrict P)
-{
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < m; i++) {
-        const double *li = A + (size_t)(k + i) * n;
-        double *pi = P + (size_t)i * w;
-        for (int j = 0; j < k; j++) {
-            double l = li[j];
-            const double *uj = U + (size_t)j * w;
-            for (int c = 0; c < w; c++)
-                pi[c] -= l * uj[c];
-        }
-    }
-}
-
-/* LU панели P (m x w) по столбцам. Для столбца c элементы U (строки i <= c)
- * вычисляются последовательно, а строки L (i > c) независимы друг от друга. */
-static void panel_lu(int m, int w, double *restrict P)
-{
-    for (int c = 0; c < w; c++) {
-        for (int i = 1; i <= c; i++)
-            for (int j = 0; j < i; j++)
-                P[(size_t)i * w + c] -= P[(size_t)i * w + j] * P[(size_t)j * w + c];
-        double p = 1.0 / P[(size_t)c * w + c];
-        #pragma omp parallel for schedule(static)
-        for (int i = c + 1; i < m; i++) {
-            double s = P[(size_t)i * w + c];
-            for (int j = 0; j < c; j++)
-                s -= P[(size_t)i * w + j] * P[(size_t)j * w + c];
-            P[(size_t)i * w + c] = s * p;
-        }
-    }
-}
+#define ROW(i) (A + (size_t)(i) * n)
+#define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
 
 /* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
- * Буферы вмещают n*r элементов, но текущий шаг строки в них равен w. */
-void block_lu_gaxpy(int n, int r, double *A)
+ * Шаг 1 последователен: это единственный шаг, где строки зависят друг от друга.
+ * В шагах 2-4 малые блоки независимы; каждый цикл завершается неявным барьером. */
+void block_lu(int n, int alpha, double *A)
 {
-    /* U выровнен на 64 байта: порции CB столбцов TRSM не делят кэш-линии. */
-    double *U = alloc64((size_t)n * r * sizeof(double));
-    double *P = malloc((size_t)n * r * sizeof(double));
-    for (int k = 0; k < n; k += r) {
-        int w = (k + r <= n) ? r : n - k, m = n - k;
+    int N = (n + alpha - 1) / alpha;
 
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < k; i++)
-            for (int c = 0; c < w; c++) U[(size_t)i * w + c] = A[(size_t)i * n + k + c];
-        trsm(n, k, w, A, U);
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < k; i++)
-            for (int c = 0; c < w; c++) A[(size_t)i * n + k + c] = U[(size_t)i * w + c];
+    for (int k = 0; k < N; k++) {
+        int a0 = k * alpha, a1 = END(k);
 
+        /* 1. A(a,a) = L(a,a) U(a,a) */
+        for (int l = a0; l < a1; l++)
+            for (int s = l + 1; s < a1; s++) {
+                ROW(s)[l] /= ROW(l)[l];
+                saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
+            }
+
+        /* 2. L(b,a) U(a,a) = A(b,a): блоки блочного столбца независимы */
         #pragma omp parallel for schedule(static)
-        for (int i = 0; i < m; i++)
-            for (int c = 0; c < w; c++) P[(size_t)i * w + c] = A[(size_t)(k + i) * n + k + c];
-        gaxpy(n, k, m, w, A, U, P);
-        panel_lu(m, w, P);
+        for (int i = k + 1; i < N; i++)
+            for (int s = i * alpha; s < END(i); s++)
+                for (int l = a0; l < a1; l++) {
+                    ROW(s)[l] /= ROW(l)[l];
+                    saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
+                }
+
+        /* 3. L(a,a) U(a,c) = A(a,c): блоки блочной строки независимы */
         #pragma omp parallel for schedule(static)
-        for (int i = 0; i < m; i++)
-            for (int c = 0; c < w; c++) A[(size_t)(k + i) * n + k + c] = P[(size_t)i * w + c];
+        for (int j = k + 1; j < N; j++) {
+            int c0 = j * alpha, m = END(j) - c0;
+            for (int l = a0; l < a1; l++)
+                for (int s = l + 1; s < a1; s++)
+                    saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
+        }
+
+        /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c): пары блоков (i, j) независимы */
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int i = k + 1; i < N; i++)
+            for (int j = k + 1; j < N; j++) {
+                int c0 = j * alpha, m = END(j) - c0;
+                for (int s = i * alpha; s < END(i); s++)
+                    for (int l = a0; l < a1; l++)
+                        saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
+            }
     }
-    free64(U); free(P);
 }
 
 static void lu_solve(int n, const double *A, double *x)
@@ -160,7 +119,7 @@ static void run(int n)
     for (int rep = 0; rep < REPS; rep++) {
         for (size_t i = 0; i < (size_t)n * n; i++) A[i] = A0[i];
         double t = wtime();
-        block_lu_gaxpy(n, R, A);
+        block_lu(n, ALPHA, A);
         t = wtime() - t;
         if (t < tmin) tmin = t;
     }
@@ -175,7 +134,7 @@ static void run(int n)
         res = fmax(res, fabs(s));
         bn = fmax(bn, fabs(b[i]));
     }
-    printf("%d,%d,%d,%.6f,%.3e,%.3e\n", n, omp_get_max_threads(), R, tmin, err, res / bn);
+    printf("%d,%d,%d,%.6f,%.3e,%.3e\n", n, omp_get_max_threads(), ALPHA, tmin, err, res / bn);
     fflush(stdout);
     free(A0); free(A); free(b); free(x);
 }
@@ -183,7 +142,7 @@ static void run(int n)
 int main(int argc, char **argv)
 {
     static const int def[] = {100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000};
-    printf("n,threads,r,time,err,res\n");
+    printf("n,threads,alpha,time,err,res\n");
     if (argc > 1)
         for (int i = 1; i < argc; i++) run(atoi(argv[i]));
     else

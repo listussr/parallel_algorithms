@@ -1,5 +1,6 @@
 /*
- * Этап 1. Последовательное блочное LU через GAXPY (left-looking, jki).
+ * Этап 1. Последовательное блочное LU-разложение: Алгоритм 37 из пособия
+ * Головашкина (параграф 2.4). Обозначения k, N, alpha, a, b, c — как в пособии.
  * Единичная диагональ L не записывается.
  * Выбора ведущего элемента и проверки нулевых пивотов нет.
  */
@@ -7,8 +8,8 @@
 #include <stdlib.h>
 #include <math.h>
 
-#define R    32   /* размер блока */
-#define REPS 3    /* число повторов, берётся минимальное время */
+#define ALPHA 32  /* размер малого блока */
+#define REPS  3   /* число повторов, берётся минимальное время */
 
 #ifdef _WIN32
 #include <windows.h>
@@ -30,40 +31,48 @@ static double wtime(void)
 #endif
 
 /* A хранится по строкам: ниже диагонали — L, на диагонали и выше — U. */
-#define a(i, j) A[(size_t)(i) * n + (j)]
+#define A(i, j) A[(size_t)(i) * n + (j)]
+/* Граница блока с номером i; последний блок может быть короче (задача 2.4.4). */
+#define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
 
-void block_lu_gaxpy(int n, int r, double *A)
+void block_lu(int n, int alpha, double *A)
 {
-    for (int k = 0; k < n; k += r) {
-        int w = (k + r <= n) ? r : n - k;
+    int N = (n + alpha - 1) / alpha;
 
-        /* 1) U(0:k,K) = L11^{-1} A(0:k,K):  A(i,K) -= L(i,j) * U(j,K), j < i */
-        for (int i = 1; i < k; i++)
-            for (int j = 0; j < i; j++) {
-                double l = a(i, j);
-                for (int c = k; c < k + w; c++)
-                    a(i, c) -= l * a(j, c);
+    for (int k = 0; k < N; k++) {
+        int a0 = k * alpha, a1 = END(k);
+
+        /* 1. A(a,a) = L(a,a) U(a,a): Алгоритм 30 со строчным saxpy */
+        for (int l = a0; l < a1; l++)
+            for (int s = l + 1; s < a1; s++) {
+                A(s, l) /= A(l, l);
+                for (int q = l + 1; q < a1; q++)
+                    A(s, q) -= A(s, l) * A(l, q);
             }
 
-        /* 2) GAXPY: A(i,K) -= L(i,0:k) * U(0:k,K) для всех строк i >= k */
-        for (int i = k; i < n; i++)
-            for (int j = 0; j < k; j++) {
-                double l = a(i, j);
-                for (int c = k; c < k + w; c++)
-                    a(i, c) -= l * a(j, c);
-            }
+        /* 2. L(b,a) U(a,a) = A(b,a): для каждой строки xU = b (задача 2.1.3) */
+        for (int i = k + 1; i < N; i++)
+            for (int s = i * alpha; s < END(i); s++)
+                for (int l = a0; l < a1; l++) {
+                    A(s, l) /= A(l, l);
+                    for (int q = l + 1; q < a1; q++)
+                        A(s, q) -= A(s, l) * A(l, q);
+                }
 
-        /* 3) LU панели A(k:n,K): столбец c = gaxpy предыдущих столбцов панели */
-        for (int c = k; c < k + w; c++) {
-            for (int j = k; j < c; j++) {
-                double u = a(j, c);
-                for (int i = j + 1; i < n; i++)
-                    a(i, c) -= a(i, j) * u;
-            }
-            double p = 1.0 / a(c, c);
-            for (int i = c + 1; i < n; i++)
-                a(i, c) *= p;
-        }
+        /* 3. L(a,a) U(a,c) = A(a,c): Алгоритм 27 для каждого столбца блока */
+        for (int j = k + 1; j < N; j++)
+            for (int l = a0; l < a1; l++)
+                for (int s = l + 1; s < a1; s++)
+                    for (int q = j * alpha; q < END(j); q++)
+                        A(s, q) -= A(s, l) * A(l, q);
+
+        /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c): основная операция */
+        for (int i = k + 1; i < N; i++)
+            for (int j = k + 1; j < N; j++)
+                for (int s = i * alpha; s < END(i); s++)
+                    for (int l = a0; l < a1; l++)
+                        for (int q = j * alpha; q < END(j); q++)
+                            A(s, q) -= A(s, l) * A(l, q);
     }
 }
 
@@ -71,10 +80,10 @@ void block_lu_gaxpy(int n, int r, double *A)
 static void lu_solve(int n, const double *A, double *x)
 {
     for (int i = 0; i < n; i++)
-        for (int j = 0; j < i; j++) x[i] -= a(i, j) * x[j];
+        for (int j = 0; j < i; j++) x[i] -= A(i, j) * x[j];
     for (int i = n - 1; i >= 0; i--) {
-        for (int j = i + 1; j < n; j++) x[i] -= a(i, j) * x[j];
-        x[i] /= a(i, i);
+        for (int j = i + 1; j < n; j++) x[i] -= A(i, j) * x[j];
+        x[i] /= A(i, i);
     }
 }
 
@@ -99,7 +108,7 @@ static void run(int n)
     for (int rep = 0; rep < REPS; rep++) {
         for (size_t i = 0; i < (size_t)n * n; i++) A[i] = A0[i];
         double t = wtime();
-        block_lu_gaxpy(n, R, A);
+        block_lu(n, ALPHA, A);
         t = wtime() - t;
         if (t < tmin) tmin = t;
     }
@@ -114,7 +123,7 @@ static void run(int n)
         res = fmax(res, fabs(s));
         bn = fmax(bn, fabs(b[i]));
     }
-    printf("%d,%d,%.6f,%.3e,%.3e\n", n, R, tmin, err, res / bn);
+    printf("%d,%d,%.6f,%.3e,%.3e\n", n, ALPHA, tmin, err, res / bn);
     fflush(stdout);
     free(A0); free(A); free(b); free(x);
 }
@@ -122,7 +131,7 @@ static void run(int n)
 int main(int argc, char **argv)
 {
     static const int def[] = {100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000};
-    printf("n,r,time,err,res\n");
+    printf("n,alpha,time,err,res\n");
     if (argc > 1)
         for (int i = 1; i < argc; i++) run(atoi(argv[i]));
     else

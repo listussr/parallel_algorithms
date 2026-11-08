@@ -1,18 +1,35 @@
-"""Сборка docs/*.md в один PDF: Markdown -> HTML (формулы KaTeX) -> PDF (headless Chrome).
+"""Сборка docs/*.md в PDF: Markdown -> HTML (формулы KaTeX) -> PDF (headless Chrome).
 
-Использование (из корня репозитория):  python docs/build_pdf.py
-Нужны: Python-пакеты markdown и pypdf, Google Chrome, Chromium или Microsoft Edge, доступ к cdn.jsdelivr.net
-и fonts.googleapis.com (KaTeX и шрифты подгружаются при печати).
-Результат: docs/lu_gaxpy.pdf
+Использование (из корня репозитория):
+    python docs/build_pdf.py                  # все книги из BOOKS
+    python docs/build_pdf.py code_reference   # только указанные
+Нужны: Python-пакеты markdown, pygments и pypdf, Google Chrome, Chromium или Microsoft Edge,
+доступ к cdn.jsdelivr.net и fonts.googleapis.com (KaTeX и шрифты подгружаются при печати).
+Результат: docs/<книга>.pdf
 """
 import base64, html, os, pathlib, re, shutil, subprocess, sys, tempfile
 import markdown
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import CLexer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "docs")
-OUT = os.path.join(DOCS, "lu_gaxpy.pdf")
 REPO = "https://github.com/listussr/parallel_algorithms/blob/main/"
-FILES = ["00_lu_theory.md", "01_sequential.md", "02_vectorization.md", "03_openmp.md", "04_mpi.md"]
+BOOKS = {
+    "block_lu": dict(
+        files=["00_lu_theory.md", "01_sequential.md", "02_vectorization.md", "03_openmp.md", "04_mpi.md"],
+        title="Блочное LU-разложение",
+        sub="Курс «Параллельные алгоритмы» · Алгоритм 37 пособия Головашкина",
+        topics="Теория · Последовательный алгоритм · Векторизация · OpenMP · MPI",
+        formula=r"A = L\,U"),
+    "code_reference": dict(
+        files=["05_code_reference.md"],
+        title="Справочник по коду",
+        sub="Блочное LU-разложение · Алгоритм 37 пособия Головашкина",
+        topics="stage1_seq.c · stage2_vec.c · stage3_omp.c · stage4_mpi.c · скрипты",
+        formula=r"A' = A_{22} - L_{21}\,U_{12}"),
+}
 BROWSERS = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -59,9 +76,9 @@ def restore_math(h, store):
     return re.sub(r"MATHPH(\d{5})X", sub, h)
 
 
-def fix_links(h, doc_id):
-    """Ссылки между файлами docs -> якоря внутри PDF, на исходники -> GitHub."""
-    ids = {f: f"d{n}" for n, f in enumerate(FILES, 1)}
+def fix_links(h, doc_id, files):
+    """Ссылки между файлами книги -> якоря внутри PDF, на остальное -> GitHub."""
+    ids = {f: f"d{n}" for n, f in enumerate(files, 1)}
 
     def href(m):
         url = m.group(1)
@@ -87,17 +104,38 @@ def embed_images(h):
     return re.sub(r'src="([^"]+\.png)"', img, h)
 
 
-def convert(name, n):
+LISTING = re.compile(r"<!-- src: (\S+) (\d+)-(\d+) -->\n```\w*\n(.*?)^```", re.S | re.M)
+
+
+def expand_listings(md, name, store):
+    """Блок кода после <!-- src: файл a-b --> заменяется строками a..b исходника
+    с настоящими номерами: листинг в PDF всегда совпадает с кодом."""
+    def sub(m):
+        path, a, b = m.group(1), int(m.group(2)), int(m.group(3))
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            code = "".join(f.readlines()[a - 1:b])
+        if m.group(4).rstrip() != code.rstrip():
+            print(f"{name}: листинг {path} {a}-{b} в .md расходится с исходником")
+        body = highlight(code, CLexer(), HtmlFormatter(linenos="inline", linenostart=a, cssclass="hl"))
+        store.append(f'<div class="listing"><div class="cap"><a href="{REPO}{path}#L{a}-L{b}">'
+                     f'{path}</a> · строки {a}–{b}</div>{body}</div>')
+        return f"LISTPH{len(store) - 1:05d}X\n"
+    return LISTING.sub(sub, md)
+
+
+def convert(name, n, files):
     with open(os.path.join(DOCS, name), encoding="utf-8") as f:
         md_text = f.read()
-    store = []
+    store, listings = [], []
+    md_text = expand_listings(md_text, name, listings)
     md_text = protect_math(md_text, store)
     doc_id = f"d{n}"
     conv = markdown.Markdown(extensions=["tables", "fenced_code", "sane_lists", "toc"],
                              extension_configs={"toc": {"slugify": lambda t, sep: f"{doc_id}-" + slug(t)}})
     h = conv.convert(md_text)
     h = restore_math(h, store)
-    h = fix_links(h, doc_id)
+    h = fix_links(h, doc_id, files)
+    h = re.sub(r"<p>LISTPH(\d{5})X</p>", lambda m: listings[int(m.group(1))], h)
     h = embed_images(h)
     # заголовок документа (h1) получает id всего раздела
     h = re.sub(r'<h1 id="[^"]*">', f'<h1 id="{doc_id}">', h, count=1)
@@ -158,13 +196,20 @@ div.tex { margin: 3mm 0; overflow: hidden; break-inside: avoid; }
 .toc li.l2 { margin: 1mm 0 1mm 8mm; font-size: 10.5pt; }
 .toc a { color: #1b1b1b; }
 .toc li.l1 a { color: var(--accent); }
+.listing { margin: 3mm 0; }
+.listing .cap { font: 8.5pt 'PT Sans', sans-serif; color: #555; margin-bottom: 1mm; }
+.listing pre { break-inside: auto; margin: 0; }
+.hl .linenos { color: #9aa5b1; padding-right: 3mm; }
+""" + HtmlFormatter(style="friendly").get_style_defs(".hl") + """
+.hl, .hl pre { background: var(--soft); }
+.hl .hll { background: none; }
 """
 
 
-def build_html():
+def build_html(book):
     parts, toc_items = [], []
-    for n, name in enumerate(FILES, 1):
-        h, toc = convert(name, n)
+    for n, name in enumerate(book["files"], 1):
+        h, toc = convert(name, n, book["files"])
         parts.append(f'<section class="doc">{h}</section>')
         toc_items += toc
     toc_html = "".join(
@@ -173,18 +218,18 @@ def build_html():
     cover = f"""
 <div class="cover">
   <div class="band">
-    <div class="title">Блочное LU-разложение через GAXPY</div>
-    <div class="sub">Курс «Параллельные алгоритмы» · вариант 5</div>
+    <div class="title">{book["title"]}</div>
+    <div class="sub">{book["sub"]}</div>
   </div>
-  <div class="formula"><span class="tex" data-display="1">A = L\\,U</span></div>
+  <div class="formula"><span class="tex" data-display="1">{book["formula"]}</span></div>
   <div class="meta">
-    Теория · Последовательный алгоритм · Векторизация · Автоматическое распараллеливание · MPI<br>
+    {book["topics"]}<br>
     Intel Core i5-1135G7 · MinGW GCC 9.2 · MS-MPI
   </div>
 </div>
 <nav class="toc"><h1>Содержание</h1><ol>{toc_html}</ol></nav>"""
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Блочное LU-разложение через GAXPY</title>
+<title>{book["title"]}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Mono&family=PT+Sans:wght@400;700&family=PT+Serif:ital,wght@0,400;0,700;1,400&display=block&subset=cyrillic">
 <link rel="stylesheet" href="{KATEX}katex.min.css">
 <script src="{KATEX}katex.min.js"></script>
@@ -202,13 +247,13 @@ document.querySelectorAll('.tex').forEach(function (el) {{
 </body></html>"""
 
 
-def fix_outline(page_html):
+def fix_outline(page_html, out, title):
     """Chrome задваивает в закладках заголовки, стоящие в начале страницы.
     Закладки пересобираются с теми же страницами, но с текстом заголовков из HTML."""
     from pypdf import PdfReader, PdfWriter
     titles = [html.unescape(re.sub(r"<[^>]+>", "", t)).strip()
               for t in re.findall(r"<h[1-6][^>]*>(.*?)</h[1-6]>", page_html, flags=re.S)]
-    reader = PdfReader(OUT)
+    reader = PdfReader(out)
     items = []                                      # (уровень, страница) в порядке документа
 
     def walk(nodes, level):
@@ -227,27 +272,36 @@ def fix_outline(page_html):
     for (level, page), title in zip(items, titles):
         parents[level] = writer.add_outline_item(title, page, parent=parents.get(level - 1))
     writer.page_mode = "/UseOutlines"
-    writer.add_metadata({"/Title": "Блочное LU-разложение через GAXPY"})
-    with open(OUT, "wb") as f:
+    writer.add_metadata({"/Title": title})
+    with open(out, "wb") as f:
         writer.write(f)
 
 
-def main():
-    browser = next((b for b in BROWSERS if os.path.exists(b)), None)
-    if not browser:
-        sys.exit("Не найден Chrome или Edge")
-    html_path = os.path.join(tempfile.gettempdir(), "lu_gaxpy_docs.html")
-    page_html = build_html()
+def build_pdf(browser, key):
+    book = BOOKS[key]
+    out = os.path.join(DOCS, key + ".pdf")
+    html_path = os.path.join(tempfile.gettempdir(), key + "_docs.html")
+    page_html = build_html(book)
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(page_html)
     profile = tempfile.mkdtemp(prefix="pdfprofile")
     subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
                     f"--user-data-dir={profile}", "--no-pdf-header-footer",
                     "--generate-pdf-document-outline", "--virtual-time-budget=20000",
-                    f"--print-to-pdf={OUT}", pathlib.Path(html_path).as_uri()],
+                    f"--print-to-pdf={out}", pathlib.Path(html_path).as_uri()],
                    check=True, timeout=180, capture_output=True)
-    fix_outline(page_html)
-    print("PDF:", OUT)
+    fix_outline(page_html, out, book["title"])
+    print("PDF:", out)
+
+
+def main():
+    browser = next((b for b in BROWSERS if os.path.exists(b)), None)
+    if not browser:
+        sys.exit("Не найден Chrome или Edge")
+    for key in sys.argv[1:] or list(BOOKS):
+        if key not in BOOKS:
+            sys.exit(f"Нет книги {key}; есть: {', '.join(BOOKS)}")
+        build_pdf(browser, key)
 
 
 if __name__ == "__main__":

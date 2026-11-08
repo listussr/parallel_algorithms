@@ -1,15 +1,15 @@
 /*
- * Этап 2. Блочное LU через GAXPY с плотными буферами U и P.
- * В треугольном решении и GAXPY внутренний цикл идёт по соседним элементам;
- * restrict описывает отсутствие перекрытия данных для автовекторизатора.
+ * Этап 2. Блочное LU-разложение (Алгоритм 37) для автовекторизации.
+ * Все шаги сводятся к одной векторной операции saxpy над соседними элементами
+ * строки; restrict описывает отсутствие перекрытия строк для векторизатора.
  * Сравниваются две сборки этого файла. Флаги и запуск — README.md, REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
-#define R    32
-#define REPS 3
+#define ALPHA 32
+#define REPS  3
 
 #ifdef _WIN32
 #include <windows.h>
@@ -30,76 +30,56 @@ static double wtime(void)
 }
 #endif
 
-/* L11 * U = U_исх; L11 — нижняя часть A с единичной диагональю.
- * Строка U(i,:) зависит от уже вычисленных U(j,:), j < i. */
-static void trsm(int n, int k, int w, const double *restrict A, double *restrict U)
+/* y(0:m) -= s * x(0:m) — единственный векторизуемый цикл алгоритма */
+static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
 {
-    for (int i = 1; i < k; i++) {
-        const double *restrict li = A + (size_t)i * n;
-        double *restrict ui = U + (size_t)i * w;
-        for (int j = 0; j < i; j++) {
-            double l = li[j];
-            const double *restrict uj = U + (size_t)j * w;
-            for (int c = 0; c < w; c++)
-                ui[c] -= l * uj[c];
-        }
-    }
+    for (int q = 0; q < m; q++)
+        y[q] -= s * x[q];
 }
 
-/* 2) P(m x w) -= L(k:n, 0:k) * U(k x w) - блочный GAXPY */
-static void gaxpy(int n, int k, int m, int w, const double *restrict A,
-                  const double *restrict U, double *restrict P)
+#define ROW(i) (A + (size_t)(i) * n)
+#define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
+
+/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента. */
+void block_lu(int n, int alpha, double *A)
 {
-    for (int i = 0; i < m; i++) {
-        const double *restrict li = A + (size_t)(k + i) * n;
-        double *restrict pi = P + (size_t)i * w;
-        for (int j = 0; j < k; j++) {
-            double l = li[j];
-            const double *restrict uj = U + (size_t)j * w;
-            for (int c = 0; c < w; c++)
-                pi[c] -= l * uj[c];
+    int N = (n + alpha - 1) / alpha;
+
+    for (int k = 0; k < N; k++) {
+        int a0 = k * alpha, a1 = END(k);
+
+        /* 1. A(a,a) = L(a,a) U(a,a) */
+        for (int l = a0; l < a1; l++)
+            for (int s = l + 1; s < a1; s++) {
+                ROW(s)[l] /= ROW(l)[l];
+                saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
+            }
+
+        /* 2. L(b,a) U(a,a) = A(b,a) */
+        for (int i = k + 1; i < N; i++)
+            for (int s = i * alpha; s < END(i); s++)
+                for (int l = a0; l < a1; l++) {
+                    ROW(s)[l] /= ROW(l)[l];
+                    saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
+                }
+
+        /* 3. L(a,a) U(a,c) = A(a,c) */
+        for (int j = k + 1; j < N; j++) {
+            int c0 = j * alpha, m = END(j) - c0;
+            for (int l = a0; l < a1; l++)
+                for (int s = l + 1; s < a1; s++)
+                    saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
         }
+
+        /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c) */
+        for (int i = k + 1; i < N; i++)
+            for (int j = k + 1; j < N; j++) {
+                int c0 = j * alpha, m = END(j) - c0;
+                for (int s = i * alpha; s < END(i); s++)
+                    for (int l = a0; l < a1; l++)
+                        saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
+            }
     }
-}
-
-/* 3) LU панели P (m x w) в jki форме */
-static void panel_lu(int m, int w, double *restrict P)
-{
-    for (int c = 0; c < w; c++) {
-        for (int j = 0; j < c; j++) {
-            double u = P[(size_t)j * w + c];
-            for (int i = j + 1; i < m; i++)
-                P[(size_t)i * w + c] -= P[(size_t)i * w + j] * u;
-        }
-        double p = 1.0 / P[(size_t)c * w + c];
-        for (int i = c + 1; i < m; i++)
-            P[(size_t)i * w + c] *= p;
-    }
-}
-
-/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
- * Буферы вмещают n*r элементов, но текущий шаг строки в них равен w. */
-void block_lu_gaxpy(int n, int r, double *A)
-{
-    double *U = malloc((size_t)n * r * sizeof(double));
-    double *P = malloc((size_t)n * r * sizeof(double));
-    for (int k = 0; k < n; k += r) {
-        int w = (k + r <= n) ? r : n - k, m = n - k;
-
-        for (int i = 0; i < k; i++)
-            for (int c = 0; c < w; c++) U[(size_t)i * w + c] = A[(size_t)i * n + k + c];
-        trsm(n, k, w, A, U);
-        for (int i = 0; i < k; i++)
-            for (int c = 0; c < w; c++) A[(size_t)i * n + k + c] = U[(size_t)i * w + c];
-
-        for (int i = 0; i < m; i++)
-            for (int c = 0; c < w; c++) P[(size_t)i * w + c] = A[(size_t)(k + i) * n + k + c];
-        gaxpy(n, k, m, w, A, U, P);
-        panel_lu(m, w, P);
-        for (int i = 0; i < m; i++)
-            for (int c = 0; c < w; c++) A[(size_t)(k + i) * n + k + c] = P[(size_t)i * w + c];
-    }
-    free(U); free(P);
 }
 
 static void lu_solve(int n, const double *A, double *x)
@@ -132,7 +112,7 @@ static void run(int n)
     for (int rep = 0; rep < REPS; rep++) {
         for (size_t i = 0; i < (size_t)n * n; i++) A[i] = A0[i];
         double t = wtime();
-        block_lu_gaxpy(n, R, A);
+        block_lu(n, ALPHA, A);
         t = wtime() - t;
         if (t < tmin) tmin = t;
     }
@@ -147,7 +127,7 @@ static void run(int n)
         res = fmax(res, fabs(s));
         bn = fmax(bn, fabs(b[i]));
     }
-    printf("%d,%d,%.6f,%.3e,%.3e\n", n, R, tmin, err, res / bn);
+    printf("%d,%d,%.6f,%.3e,%.3e\n", n, ALPHA, tmin, err, res / bn);
     fflush(stdout);
     free(A0); free(A); free(b); free(x);
 }
@@ -155,7 +135,7 @@ static void run(int n)
 int main(int argc, char **argv)
 {
     static const int def[] = {100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000};
-    printf("n,r,time,err,res\n");
+    printf("n,alpha,time,err,res\n");
     if (argc > 1)
         for (int i = 1; i < argc; i++) run(atoi(argv[i]));
     else

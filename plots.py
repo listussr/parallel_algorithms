@@ -50,7 +50,7 @@ X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686")
 s1 = run([exe("stage1_seq"), *map(str, NS)], "stage1_seq.csv")
 plt.plot([r["n"] for r in s1], [r["err"] for r in s1], "o-", label="||x - x*||∞")
 plt.plot([r["n"] for r in s1], [r["res"] for r in s1], "s-", label="||Ax - b||∞ / ||b||∞")
-fig("stage1_error.png", "n", "погрешность", "Этап 1. Погрешность блочного LU (GAXPY)", logy=True)
+fig("stage1_error.png", "n", "погрешность", "Этап 1. Погрешность блочного LU (Алгоритм 37)", logy=True)
 
 # ---- Этап 2: ускорение от векторизации ----
 nv = run([exe("stage2_novec"), *map(str, NS)], "stage2_novec.csv")

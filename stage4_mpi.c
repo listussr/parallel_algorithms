@@ -1,7 +1,8 @@
 /*
- * Этап 4. MPI: полная матрица есть у каждого процесса.
- * Треугольное решение делится по столбцам, GAXPY — по строкам панели;
- * после обменов каждый процесс выполняет LU всей панели.
+ * Этап 4. MPI: блочное LU-разложение (Алгоритм 37) на распределённой памяти.
+ * Блочные строки матрицы циклически распределены по процессам: блок i хранится
+ * только у процесса i % size. На итерации k владелец блочной строки k выполняет
+ * шаги 1 и 3 и рассылает её, остальные шаги каждый делает над своими строками.
  * Генерация матрицы, проверка решения и вывод CSV — только на процессе 0.
  * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
  */
@@ -10,109 +11,128 @@
 #include <stdlib.h>
 #include <math.h>
 
-#define R    32
-#define REPS 3
+#define ALPHA 32
+#define REPS  3
 static int rank, size;
 
-/* Непрерывные участки: первые total % parts получают по элементу сверх частного.
- * При total < parts некоторые процессы получают пустой участок. */
-static void split(int total, int parts, int *cnt, int *off)
+#define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
+/* Начало строк блока i в локальном массиве владельца: все предшествующие
+ * блоки этого процесса полные, короче может быть только последний блок матрицы. */
+#define LOCAL_ROW(i) ((size_t)((i) / size) * alpha * n)
+
+static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
 {
-    for (int p = 0, o = 0; p < parts; p++) {
-        cnt[p] = total / parts + (p < total % parts);
-        off[p] = o;
-        o += cnt[p];
+    for (int q = 0; q < m; q++)
+        y[q] -= s * x[q];
+}
+
+/* A — локальные блочные строки этого процесса, по n элементов в строке. */
+void block_lu_mpi(int n, int alpha, double *A)
+{
+    int N = (n + alpha - 1) / alpha;
+    double *W = malloc((size_t)alpha * n * sizeof(double));   /* блочная строка k */
+
+    for (int k = 0; k < N; k++) {
+        int a0 = k * alpha, w = END(k) - a0, t = n - a0;      /* W: w строк по t чисел */
+        int owner = k % size;
+
+        if (rank == owner) {
+            double *Ak = A + LOCAL_ROW(k);
+            /* 1. A(a,a) = L(a,a) U(a,a) */
+            for (int l = 0; l < w; l++) {
+                const double *rl = Ak + (size_t)l * n + a0;
+                for (int s = l + 1; s < w; s++) {
+                    double *rs = Ak + (size_t)s * n + a0;
+                    rs[l] /= rl[l];
+                    saxpy(w - l - 1, rs[l], rl + l + 1, rs + l + 1);
+                }
+            }
+            /* 3. L(a,a) U(a,c) = A(a,c) */
+            for (int j = k + 1; j < N; j++) {
+                int c0 = j * alpha, m = END(j) - c0;
+                for (int l = 0; l < w; l++) {
+                    const double *rl = Ak + (size_t)l * n;
+                    for (int s = l + 1; s < w; s++) {
+                        double *rs = Ak + (size_t)s * n;
+                        saxpy(m, rs[a0 + l], rl + c0, rs + c0);
+                    }
+                }
+            }
+            for (int s = 0; s < w; s++)
+                for (int q = 0; q < t; q++)
+                    W[(size_t)s * t + q] = Ak[(size_t)s * n + a0 + q];
+        }
+        /* После последнего блока строк ниже нет: рассылать некому и незачем. */
+        if (k == N - 1) break;
+        MPI_Bcast(W, w * t, MPI_DOUBLE, owner, MPI_COMM_WORLD);
+
+        /* Первый свой блок ниже k: i >= k + 1, i % size == rank */
+        for (int i = k + 1 + ((rank - k - 1) % size + size) % size; i < N; i += size) {
+            double *Ai = A + LOCAL_ROW(i);
+            int h = END(i) - i * alpha;
+            /* 2. L(b,a) U(a,a) = A(b,a) */
+            for (int s = 0; s < h; s++) {
+                double *rs = Ai + (size_t)s * n + a0;
+                for (int l = 0; l < w; l++) {
+                    const double *ul = W + (size_t)l * t;
+                    rs[l] /= ul[l];
+                    saxpy(w - l - 1, rs[l], ul + l + 1, rs + l + 1);
+                }
+            }
+            /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c) */
+            for (int j = k + 1; j < N; j++) {
+                int c0 = j * alpha, m = END(j) - c0;
+                for (int s = 0; s < h; s++) {
+                    double *rs = Ai + (size_t)s * n;
+                    for (int l = 0; l < w; l++)
+                        saxpy(m, rs[a0 + l], W + (size_t)l * t + c0 - a0, rs + c0);
+                }
+            }
+        }
+    }
+    free(W);
+}
+
+/* Раздать блочные строки A0 (процесс 0) по локальным массивам A. Вне замера. */
+static void scatter_rows(int n, int alpha, const double *A0, double *A)
+{
+    int N = (n + alpha - 1) / alpha;
+    for (int i = 0; i < N; i++) {
+        int h = END(i) - i * alpha, owner = i % size;
+        if (rank == 0 && owner == 0) {
+            for (size_t e = 0; e < (size_t)h * n; e++)
+                A[LOCAL_ROW(i) + e] = A0[(size_t)i * alpha * n + e];
+        } else if (rank == 0) {
+            MPI_Send(A0 + (size_t)i * alpha * n, h * n, MPI_DOUBLE, owner, i, MPI_COMM_WORLD);
+        } else if (rank == owner) {
+            MPI_Recv(A + LOCAL_ROW(i), h * n, MPI_DOUBLE, 0, i, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
     }
 }
 
-/* неблочное LU панели P (m x w, row-major) в jki (gaxpy) форме */
-static void panel_lu(int m, int w, double *P)
+/* Собрать разложение на процессе 0, чтобы проверить решение. Вне замера. */
+static void gather_rows(int n, int alpha, const double *A, double *LU)
 {
-    for (int c = 0; c < w; c++) {
-        for (int j = 0; j < c; j++) {
-            double u = P[j * w + c];
-            for (int i = j + 1; i < m; i++)
-                P[(size_t)i * w + c] -= P[(size_t)i * w + j] * u;
+    int N = (n + alpha - 1) / alpha;
+    for (int i = 0; i < N; i++) {
+        int h = END(i) - i * alpha, owner = i % size;
+        if (rank == 0 && owner == 0) {
+            for (size_t e = 0; e < (size_t)h * n; e++)
+                LU[(size_t)i * alpha * n + e] = A[LOCAL_ROW(i) + e];
+        } else if (rank == 0) {
+            MPI_Recv(LU + (size_t)i * alpha * n, h * n, MPI_DOUBLE, owner, i, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        } else if (rank == owner) {
+            MPI_Send(A + LOCAL_ROW(i), h * n, MPI_DOUBLE, 0, i, MPI_COMM_WORLD);
         }
-        double p = 1.0 / P[c * w + c];
-        for (int i = c + 1; i < m; i++) P[(size_t)i * w + c] *= p;
     }
-}
-
-void block_lu_gaxpy_mpi(int n, int r, double *A)
-{
-    int *cnt = malloc(size * sizeof(int)), *off = malloc(size * sizeof(int));
-    int *rc = malloc(size * sizeof(int)), *ro = malloc(size * sizeof(int));
-    int *cc = malloc(size * sizeof(int)), *co = malloc(size * sizeof(int));
-    double *U   = malloc((size_t)n * r * sizeof(double));   /* k x w, row-major */
-    double *P   = malloc((size_t)n * r * sizeof(double));   /* (n-k) x w       */
-    double *buf = malloc((size_t)n * r * sizeof(double));
-
-    for (int k = 0; k < n; k += r) {
-        int w = (k + r <= n) ? r : n - k;
-
-        /* ---- 1) треугольное решение, делим столбцы блока ---- */
-        if (k > 0) {
-            split(w, size, cnt, off);
-            int c0 = k + off[rank], nc = cnt[rank];
-            /* мои столбцы -> плотный буфер buf (k x nc), решение по строкам (gaxpy) */
-            for (int i = 0; i < k; i++)
-                for (int c = 0; c < nc; c++) buf[i * nc + c] = A[(size_t)i * n + c0 + c];
-            for (int i = 1; i < k; i++) {
-                const double *li = A + (size_t)i * n;
-                double *ui = buf + i * nc;
-                for (int j = 0; j < i; j++) {
-                    double l = li[j];
-                    const double *uj = buf + j * nc;
-                    for (int c = 0; c < nc; c++) ui[c] -= l * uj[c];
-                }
-            }
-            for (int p = 0; p < size; p++) { cc[p] = cnt[p] * k; co[p] = off[p] * k; }
-            MPI_Allgatherv(buf, cc[rank], MPI_DOUBLE, U, cc, co, MPI_DOUBLE, MPI_COMM_WORLD);
-            /* Allgatherv собрал подряд локальные блоки k x cnt[p], а не строки U.
-             * Через A переупаковываем их в общий блок k x w. */
-            for (int p = 0; p < size; p++)
-                for (int i = 0; i < k; i++)
-                    for (int c = 0; c < cnt[p]; c++)
-                        A[(size_t)i * n + k + off[p] + c] = U[co[p] + i * cnt[p] + c];
-            for (int i = 0; i < k; i++)
-                for (int c = 0; c < w; c++) U[i * w + c] = A[(size_t)i * n + k + c];
-
-            /* ---- 2) GAXPY, делим строки k..n-1 ---- */
-            int m = n - k;
-            split(m, size, cnt, off);
-            int i0 = off[rank], ni = cnt[rank];
-            for (int i = i0; i < i0 + ni; i++)
-                for (int c = 0; c < w; c++) P[(size_t)i * w + c] = A[(size_t)(k + i) * n + k + c];
-            for (int i = i0; i < i0 + ni; i++) {
-                const double *li = A + (size_t)(k + i) * n;
-                double *pi = P + (size_t)i * w;
-                for (int j = 0; j < k; j++) {
-                    double l = li[j];
-                    const double *uj = U + (size_t)j * w;
-                    for (int c = 0; c < w; c++) pi[c] -= l * uj[c];
-                }
-            }
-            for (int p = 0; p < size; p++) { rc[p] = cnt[p] * w; ro[p] = off[p] * w; }
-            /* Свои строки уже лежат в P по смещению ro[rank], как требует IN_PLACE. */
-            MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, P, rc, ro, MPI_DOUBLE, MPI_COMM_WORLD);
-        } else {
-            /* У первого блока нет предшествующих столбцов: обновление не требуется. */
-            for (int i = 0; i < n; i++)
-                for (int c = 0; c < w; c++) P[(size_t)i * w + c] = A[(size_t)i * n + c];
-        }
-        /* Все процессы имеют одну панель P и независимо получают одинаковое LU. */
-        panel_lu(n - k, w, P);
-        for (int i = 0; i < n - k; i++)
-            for (int c = 0; c < w; c++) A[(size_t)(k + i) * n + k + c] = P[(size_t)i * w + c];
-    }
-    free(cnt); free(off); free(rc); free(ro); free(cc); free(co);
-    free(U); free(P); free(buf);
 }
 
 static void run(int n)
 {
-    double *A = malloc((size_t)n * n * sizeof(double));
+    int alpha = ALPHA, N = (n + alpha - 1) / alpha, rows = 0;
+    for (int i = rank; i < N; i += size) rows += END(i) - i * alpha;
+    /* При числе процессов больше N у процесса может не быть строк. */
+    double *A = malloc(((size_t)rows * n + 1) * sizeof(double));
     double *A0 = NULL, *b = NULL;
 
     if (rank == 0) {
@@ -130,26 +150,27 @@ static void run(int n)
 
     double tmin = 1e30;
     for (int rep = 0; rep < REPS; rep++) {
-        if (rank == 0)
-            for (size_t i = 0; i < (size_t)n * n; i++) A[i] = A0[i];
-        /* Рассылка исходной матрицы вне замера; конечный барьер входит во время. */
-        MPI_Bcast(A, n * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        scatter_rows(n, alpha, A0, A);
         MPI_Barrier(MPI_COMM_WORLD);
         double t = MPI_Wtime();
-        block_lu_gaxpy_mpi(n, R, A);
+        block_lu_mpi(n, alpha, A);
+        /* Конечный барьер входит во время: ждём самый медленный процесс. */
         MPI_Barrier(MPI_COMM_WORLD);
         t = MPI_Wtime() - t;
         if (t < tmin) tmin = t;
     }
 
+    double *LU = rank == 0 ? malloc((size_t)n * n * sizeof(double)) : NULL;
+    gather_rows(n, alpha, A, LU);
+
     if (rank == 0) {
         double *x = malloc(n * sizeof(double));
         for (int i = 0; i < n; i++) x[i] = b[i];
         for (int i = 0; i < n; i++)
-            for (int j = 0; j < i; j++) x[i] -= A[(size_t)i * n + j] * x[j];
+            for (int j = 0; j < i; j++) x[i] -= LU[(size_t)i * n + j] * x[j];
         for (int i = n - 1; i >= 0; i--) {
-            for (int j = i + 1; j < n; j++) x[i] -= A[(size_t)i * n + j] * x[j];
-            x[i] /= A[(size_t)i * n + i];
+            for (int j = i + 1; j < n; j++) x[i] -= LU[(size_t)i * n + j] * x[j];
+            x[i] /= LU[(size_t)i * n + i];
         }
         double err = 0, res = 0, bn = 0;
         for (int i = 0; i < n; i++) {
@@ -159,9 +180,9 @@ static void run(int n)
             res = fmax(res, fabs(s));
             bn = fmax(bn, fabs(b[i]));
         }
-        printf("%d,%d,%d,%.6f,%.3e,%.3e\n", size, n, R, tmin, err, res / bn);
+        printf("%d,%d,%d,%.6f,%.3e,%.3e\n", size, n, alpha, tmin, err, res / bn);
         fflush(stdout);
-        free(x); free(A0); free(b);
+        free(x); free(A0); free(b); free(LU);
     }
     free(A);
 }
@@ -172,7 +193,7 @@ int main(int argc, char **argv)
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    if (rank == 0) printf("procs,n,r,time,err,res\n");
+    if (rank == 0) printf("procs,n,alpha,time,err,res\n");
     if (argc > 1)
         for (int i = 1; i < argc; i++) run(atoi(argv[i]));
     else
