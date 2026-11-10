@@ -13,6 +13,8 @@
 | 3 | [stage3_omp.c](stage3_omp.c) | OpenMP: `#pragma omp parallel for`, итерации распределяет OpenMP | [docs/03_openmp.md](docs/03_openmp.md) |
 | 4 | [stage4_mpi.c](stage4_mpi.c) | MPI-программа, ускорение от числа процессов и размера матрицы | [docs/04_mpi.md](docs/04_mpi.md) |
 | — | все | справочник по коду: формулы → строки кода, обмены, скрипты | [docs/05_code_reference.md](docs/05_code_reference.md) |
+| — | все | пошаговый разбор алгоритма и его параллельных версий на примере 6 × 6 | [docs/06_walkthrough.md](docs/06_walkthrough.md) |
+| — | все | подробный гайд: формулы, код и трассировки всех четырёх программ, упражнения | [docs/07_guide.md](docs/07_guide.md) |
 
 ---
 
@@ -99,12 +101,16 @@ $1{,}55 \cdot 10^{-15}$ при $n = 100$ и $1{,}27 \cdot 10^{-14}$ при $n = 
 | [docs/](docs) | подробные описания алгоритмов этапов |
 | [docs/block_lu.pdf](docs/block_lu.pdf) | теория и описания этапов (`docs/00`–`04`) одним PDF |
 | [docs/code_reference.pdf](docs/code_reference.pdf) | справочник по коду (`docs/05`) с листингами из исходников |
+| [docs/walkthrough.pdf](docs/walkthrough.pdf) | пошаговый разбор алгоритма на примере 6 × 6 (`docs/06`) |
+| [docs/guide.pdf](docs/guide.pdf) | подробный гайд «от формул до кода» (`docs/07`) |
+| [docs/trace/](docs/trace) | трассировки программ на примере 6 × 6 и скрипт `make_traces.py`, который их получает |
 | [docs/build_pdf.py](docs/build_pdf.py) | сборка обоих PDF: `python docs/build_pdf.py [block_lu\|code_reference]` |
 | [build.sh](build.sh) | сборка всех вариантов в `bin/` |
 | [include/sal.h](include/sal.h) | пустая заглушка заголовка, нужная MS-MPI под MinGW |
 | [plots.py](plots.py) | запуск всех экспериментов, CSV и графики в `results/` |
 | [results/](results) | результаты замеров |
 | [REPORT.md](REPORT.md) | отчёт по замерам |
+| [reports/](reports) | отчёты по лабораторным работам 1–4 в `.docx` и `.pdf`, исходники в `reports/src/` |
 
 ## Требования
 

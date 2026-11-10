@@ -23,6 +23,18 @@ BOOKS = {
         sub="Курс «Параллельные алгоритмы» · Алгоритм 37 пособия Головашкина",
         topics="Теория · Последовательный алгоритм · Векторизация · OpenMP · MPI",
         formula=r"A = L\,U"),
+    "walkthrough": dict(
+        files=["06_walkthrough.md"],
+        title="Пошаговый разбор алгоритма",
+        sub="Блочное LU-разложение · Алгоритм 37 пособия Головашкина",
+        topics="Пример 6 × 6 · четыре шага · зависимости · OpenMP · MPI",
+        formula=r"A' = A_{22} - L_{21}\,U_{12}"),
+    "guide": dict(
+        files=["07_guide.md"],
+        title="Подробный гайд: от формул до кода",
+        sub="Блочное LU-разложение · Алгоритм 37 пособия Головашкина",
+        topics="Формулы · трассировки stage1–stage4 · OpenMP · MPI · упражнения",
+        formula=r"a_{sq} \leftarrow a_{sq} - \ell_{sl}\, u_{lq}"),
     "code_reference": dict(
         files=["05_code_reference.md"],
         title="Справочник по коду",
