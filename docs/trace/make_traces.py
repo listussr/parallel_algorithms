@@ -82,15 +82,25 @@ def save(name, text):
 # ---------------------------------------------------------------- этап 1: каждая операция
 def stage1():
     src = read("stage1_seq.c")
-    div = "A(s, l) /= A(l, l);"
     sub = "A(s, q) -= A(s, l) * A(l, q);"
-    d = lambda st, ctx, cv: ("{ double o_ = A(s, l); A(s, l) /= A(l, l); "
-                             f'printf("k=%d шаг {st}{ctx} l=%d s=%d:      A(%d,%d) = %g / %g = %g\\n", k{cv}, l, s, s, l, o_, A(l, l), A(s, l)); }}')
-    m = lambda st, ctx, cv: ("{ double o_ = A(s, q); A(s, q) -= A(s, l) * A(l, q); "
-                             f'printf("k=%d шаг {st}{ctx} l=%d s=%d q=%d: A(%d,%d) = %g - (%g)*(%g) = %g\\n", k{cv}, l, s, q, s, q, o_, A(s, l), A(l, q), A(s, q)); }}')
+    def panel_sub(label):
+        return ('{ double old_ = A(s, j); A(s, j) -= A(s, p) * A(p, j); '
+                f'printf("k=%d панель {label} j=%d p=%d s=%d: "'
+                ' "A(%d,%d) = %g - (%g)*(%g) = %g\\n", '
+                'k, j, p, s, s, j, old_, A(s, p), A(p, j), A(s, j)); }')
+    def update(label, extra):
+        return ('{ double old_ = A(s, q); A(s, q) -= A(s, l) * A(l, q); '
+                f'printf("k=%d шаг {label} l=%d s=%d q=%d: "'
+                ' "A(%d,%d) = %g - (%g)*(%g) = %g\\n", '
+                f'k, {extra}l, s, q, s, q, old_, A(s, l), A(l, q), A(s, q)); }}')
     src = patch(src, [
-        (div, [d(1, "", ""), d(2, " i=%d", ", i")]),
-        (sub, [m(1, "", ""), m(2, " i=%d", ", i"), m(3, " j=%d", ", j"), m(4, " i=%d j=%d", ", i, j")]),
+        ("A(s, j) -= A(s, p) * A(p, j);",
+         [panel_sub("U"), panel_sub("GAXPY")]),
+        ("A(s, j) /= A(j, j);",
+         '{ double old_ = A(s, j); A(s, j) /= A(j, j); '
+         'printf("k=%d панель L j=%d s=%d: A(%d,%d) = %g / %g = %g\\n", '
+         'k, j, s, s, j, old_, A(j, j), A(s, j)); }'),
+        (sub, [update("3 j=%d", "j, "), update("4 i=%d j=%d", "i, j, ")]),
     ])
     code = ("#define main stage_main\n" + src + "\n#undef main\n" + EXAMPLE + r"""
 int main(void)
