@@ -1,0 +1,14 @@
+{
+  "algorithm": "Algorithm 37 second variant, GAXPY panel (Algorithm 34)",
+  "source_commit": "6092d10",
+  "date": "2026-11-17",
+  "platform": "Linux x86-64",
+  "cpu": "Intel Core i5-12450H",
+  "compiler": "GCC 16.2.1",
+  "build": "cc -std=gnu99 -O2 -fno-tree-vectorize -Wall -Wextra -Werror stage1_seq.c -lm -o /tmp/stage1_gaxpy",
+  "run": "/tmp/stage1_gaxpy",
+  "repetitions": 3,
+  "time_statistic": "minimum",
+  "alpha": 32,
+  "seed": 12345
+}
