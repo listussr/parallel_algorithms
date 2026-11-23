@@ -1,5 +1,5 @@
 /*
- * Этап 3. OpenMP: блочное LU-разложение (Алгоритм 37).
+ * Этап 3. OpenMP: блочное LU-разложение с GAXPY-панелью.
  * Параллельные циклы помечены #pragma omp parallel for; итерации между
  * потоками распределяет сама OpenMP (schedule(static)), без ручного деления
  * по номеру потока. Число потоков задаёт OMP_NUM_THREADS.
@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <omp.h>
+#include "include/gaxpy_panel.h"
 
 #define ALPHA 32
 #define REPS  3
@@ -43,8 +44,8 @@ static inline void saxpy(int m, double s, const double *restrict x, double *rest
 #define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
 
 /* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
- * Шаг 1 последователен: это единственный шаг, где строки зависят друг от друга.
- * В шагах 2-4 малые блоки независимы; каждый цикл завершается неявным барьером. */
+ * Диагональная часть панели вычисляется последовательно. Нижние строки
+ * независимы после получения U11. Параллельные циклы завершаются барьером. */
 void block_lu(int n, int alpha, double *A)
 {
     int N = (n + alpha - 1) / alpha;
@@ -52,21 +53,14 @@ void block_lu(int n, int alpha, double *A)
     for (int k = 0; k < N; k++) {
         int a0 = k * alpha, a1 = END(k);
 
-        /* 1. A(a,a) = L(a,a) U(a,a) */
-        for (int l = a0; l < a1; l++)
-            for (int s = l + 1; s < a1; s++) {
-                ROW(s)[l] /= ROW(l)[l];
-                saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
-            }
+        int w = a1 - a0;
+        double *diagonal = ROW(a0) + a0;
 
-        /* 2. L(b,a) U(a,a) = A(b,a): блоки блочного столбца независимы */
+        /* 1–2. GAXPY-панель: сначала L11 и U11, затем независимые строки L21. */
+        gaxpy_panel(diagonal, n, w, w);
         #pragma omp parallel for schedule(static)
-        for (int i = k + 1; i < N; i++)
-            for (int s = i * alpha; s < END(i); s++)
-                for (int l = a0; l < a1; l++) {
-                    ROW(s)[l] /= ROW(l)[l];
-                    saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
-                }
+        for (int s = a1; s < n; s++)
+            gaxpy_panel_row(ROW(s) + a0, diagonal, n, w);
 
         /* 3. L(a,a) U(a,c) = A(a,c): блоки блочной строки независимы */
         #pragma omp parallel for schedule(static)

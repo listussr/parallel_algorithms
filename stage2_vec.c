@@ -1,12 +1,13 @@
 /*
- * Этап 2. Блочное LU-разложение (Алгоритм 37) для автовекторизации.
- * Все шаги сводятся к одной векторной операции saxpy над соседними элементами
- * строки; restrict описывает отсутствие перекрытия строк для векторизатора.
+ * Этап 2. Блочное LU-разложение с GAXPY-панелью для автовекторизации.
+ * Вычисление U12 и обновление остатка используют saxpy над соседними
+ * элементами строки; restrict описывает отсутствие перекрытия строк.
  * Сравниваются две сборки этого файла. Флаги и запуск — README.md, REPORT.md.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include "include/gaxpy_panel.h"
 
 #define ALPHA 32
 #define REPS  3
@@ -30,7 +31,7 @@ static double wtime(void)
 }
 #endif
 
-/* y(0:m) -= s * x(0:m) — единственный векторизуемый цикл алгоритма */
+/* y(0:m) -= s * x(0:m) по смежным элементам строк */
 static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
 {
     for (int q = 0; q < m; q++)
@@ -48,20 +49,8 @@ void block_lu(int n, int alpha, double *A)
     for (int k = 0; k < N; k++) {
         int a0 = k * alpha, a1 = END(k);
 
-        /* 1. A(a,a) = L(a,a) U(a,a) */
-        for (int l = a0; l < a1; l++)
-            for (int s = l + 1; s < a1; s++) {
-                ROW(s)[l] /= ROW(l)[l];
-                saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
-            }
-
-        /* 2. L(b,a) U(a,a) = A(b,a) */
-        for (int i = k + 1; i < N; i++)
-            for (int s = i * alpha; s < END(i); s++)
-                for (int l = a0; l < a1; l++) {
-                    ROW(s)[l] /= ROW(l)[l];
-                    saxpy(a1 - l - 1, ROW(s)[l], ROW(l) + l + 1, ROW(s) + l + 1);
-                }
+        /* 1–2. GAXPY по всей панели: L11, U11 и L21. */
+        gaxpy_panel(ROW(a0) + a0, n, n - a0, a1 - a0);
 
         /* 3. L(a,a) U(a,c) = A(a,c) */
         for (int j = k + 1; j < N; j++) {

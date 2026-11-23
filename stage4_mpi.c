@@ -1,8 +1,9 @@
 /*
- * Этап 4. MPI: блочное LU-разложение (Алгоритм 37) на распределённой памяти.
+ * Этап 4. MPI: блочное LU-разложение с GAXPY-панелью.
  * Блочные строки матрицы циклически распределены по процессам: блок i хранится
  * только у процесса i % size. На итерации k владелец блочной строки k выполняет
- * шаги 1 и 3 и рассылает её, остальные шаги каждый делает над своими строками.
+ * GAXPY для диагонального блока, вычисляет U12 и рассылает результат.
+ * Каждый процесс завершает GAXPY для своих нижних строк и обновляет остаток.
  * Генерация матрицы, проверка решения и вывод CSV — только на процессе 0.
  * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
  */
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include "include/gaxpy_panel.h"
 
 #define ALPHA 32
 #define REPS  3
@@ -38,16 +40,8 @@ void block_lu_mpi(int n, int alpha, double *A)
 
         if (rank == owner) {
             double *Ak = A + LOCAL_ROW(k);
-            /* 1. A(a,a) = L(a,a) U(a,a) */
-            for (int l = 0; l < w; l++) {
-                const double *rl = Ak + (size_t)l * n + a0;
-                for (int s = l + 1; s < w; s++) {
-                    double *rs = Ak + (size_t)s * n + a0;
-                    rs[l] /= rl[l];
-                    saxpy(w - l - 1, rs[l], rl + l + 1, rs + l + 1);
-                }
-            }
-            /* 3. L(a,a) U(a,c) = A(a,c) */
+            /* GAXPY для L11 и U11, затем L(a,a) U(a,c) = A(a,c). */
+            gaxpy_panel(Ak + a0, n, w, w);
             for (int j = k + 1; j < N; j++) {
                 int c0 = j * alpha, m = END(j) - c0;
                 for (int l = 0; l < w; l++) {
@@ -70,15 +64,9 @@ void block_lu_mpi(int n, int alpha, double *A)
         for (int i = k + 1 + ((rank - k - 1) % size + size) % size; i < N; i += size) {
             double *Ai = A + LOCAL_ROW(i);
             int h = END(i) - i * alpha;
-            /* 2. L(b,a) U(a,a) = A(b,a) */
-            for (int s = 0; s < h; s++) {
-                double *rs = Ai + (size_t)s * n + a0;
-                for (int l = 0; l < w; l++) {
-                    const double *ul = W + (size_t)l * t;
-                    rs[l] /= ul[l];
-                    saxpy(w - l - 1, rs[l], ul + l + 1, rs + l + 1);
-                }
-            }
+            /* Нижняя часть GAXPY-панели: локальные строки L21. */
+            for (int s = 0; s < h; s++)
+                gaxpy_panel_row(Ai + (size_t)s * n + a0, W, t, w);
             /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c) */
             for (int j = k + 1; j < N; j++) {
                 int c0 = j * alpha, m = END(j) - c0;
