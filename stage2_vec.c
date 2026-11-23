@@ -1,8 +1,6 @@
 /*
- * Этап 2. Блочное LU-разложение с GAXPY-панелью для автовекторизации.
- * Вычисление U12 и обновление остатка используют saxpy над соседними
- * элементами строки; restrict описывает отсутствие перекрытия строк.
- * Сравниваются две сборки этого файла. Флаги и запуск — README.md, REPORT.md.
+ * Блочное LU-разложение с GAXPY-панелью. Для сравнения сборок с векторизацией
+ * и без неё основная работа выполняется над смежными элементами строк.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,7 +29,6 @@ static double wtime(void)
 }
 #endif
 
-/* y(0:m) -= s * x(0:m) по смежным элементам строк */
 static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
 {
     for (int q = 0; q < m; q++)
@@ -41,7 +38,7 @@ static inline void saxpy(int m, double s, const double *restrict x, double *rest
 #define ROW(i) (A + (size_t)(i) * n)
 #define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
 
-/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента. */
+/* Факторы записываются в A: L ниже диагонали, U на диагонали и выше. */
 void block_lu(int n, int alpha, double *A)
 {
     int N = (n + alpha - 1) / alpha;
@@ -49,10 +46,10 @@ void block_lu(int n, int alpha, double *A)
     for (int k = 0; k < N; k++) {
         int a0 = k * alpha, a1 = END(k);
 
-        /* 1–2. GAXPY по всей панели: L11, U11 и L21. */
+        /* Вычисляем L11, U11 и L21 по столбцам панели. */
         gaxpy_panel(ROW(a0) + a0, n, n - a0, a1 - a0);
 
-        /* 3. L(a,a) U(a,c) = A(a,c) */
+        /* Прямая подстановка для U12: L11 * U12 = A12. */
         for (int j = k + 1; j < N; j++) {
             int c0 = j * alpha, m = END(j) - c0;
             for (int l = a0; l < a1; l++)
@@ -60,7 +57,7 @@ void block_lu(int n, int alpha, double *A)
                     saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
         }
 
-        /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c) */
+        /* A22 <- A22 - L21 * U12. */
         for (int i = k + 1; i < N; i++)
             for (int j = k + 1; j < N; j++) {
                 int c0 = j * alpha, m = END(j) - c0;

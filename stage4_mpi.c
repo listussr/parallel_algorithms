@@ -1,11 +1,6 @@
 /*
- * Этап 4. MPI: блочное LU-разложение с GAXPY-панелью.
- * Блочные строки матрицы циклически распределены по процессам: блок i хранится
- * только у процесса i % size. На итерации k владелец блочной строки k выполняет
- * GAXPY для диагонального блока, вычисляет U12 и рассылает результат.
- * Каждый процесс завершает GAXPY для своих нижних строк и обновляет остаток.
- * Генерация матрицы, проверка решения и вывод CSV — только на процессе 0.
- * Сборка и запуск — README.md; алгоритм и методика замеров — REPORT.md.
+ * Блочное LU-разложение с GAXPY-панелью на распределённой памяти.
+ * Блочная строка i хранится у процесса i % size.
  */
 #include <mpi.h>
 #include <stdio.h>
@@ -18,8 +13,7 @@
 static int rank, size;
 
 #define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
-/* Начало строк блока i в локальном массиве владельца: все предшествующие
- * блоки этого процесса полные, короче может быть только последний блок матрицы. */
+/* Смещение блока i у владельца. Все предшествующие блоки имеют alpha строк. */
 #define LOCAL_ROW(i) ((size_t)((i) / size) * alpha * n)
 
 static inline void saxpy(int m, double s, const double *restrict x, double *restrict y)
@@ -28,20 +22,19 @@ static inline void saxpy(int m, double s, const double *restrict x, double *rest
         y[q] -= s * x[q];
 }
 
-/* A — локальные блочные строки этого процесса, по n элементов в строке. */
 void block_lu_mpi(int n, int alpha, double *A)
 {
     int N = (n + alpha - 1) / alpha;
-    double *W = malloc((size_t)alpha * n * sizeof(double));   /* блочная строка k */
+    double *W = malloc((size_t)alpha * n * sizeof(double));
 
     for (int k = 0; k < N; k++) {
-        int a0 = k * alpha, w = END(k) - a0, t = n - a0;      /* W: w строк по t чисел */
+        int a0 = k * alpha, w = END(k) - a0, t = n - a0;
         int owner = k % size;
 
         if (rank == owner) {
             double *Ak = A + LOCAL_ROW(k);
-            /* GAXPY для L11 и U11, затем L(a,a) U(a,c) = A(a,c). */
             gaxpy_panel(Ak + a0, n, w, w);
+            /* Владелец вычисляет U12 из L11 * U12 = A12. */
             for (int j = k + 1; j < N; j++) {
                 int c0 = j * alpha, m = END(j) - c0;
                 for (int l = 0; l < w; l++) {
@@ -56,18 +49,17 @@ void block_lu_mpi(int n, int alpha, double *A)
                 for (int q = 0; q < t; q++)
                     W[(size_t)s * t + q] = Ak[(size_t)s * n + a0 + q];
         }
-        /* После последнего блока строк ниже нет: рассылать некому и незачем. */
         if (k == N - 1) break;
+        /* В W упакованы w строк длины t с U11 и U12 для нижних блоков. */
         MPI_Bcast(W, w * t, MPI_DOUBLE, owner, MPI_COMM_WORLD);
 
         /* Первый свой блок ниже k: i >= k + 1, i % size == rank */
         for (int i = k + 1 + ((rank - k - 1) % size + size) % size; i < N; i += size) {
             double *Ai = A + LOCAL_ROW(i);
             int h = END(i) - i * alpha;
-            /* Нижняя часть GAXPY-панели: локальные строки L21. */
             for (int s = 0; s < h; s++)
                 gaxpy_panel_row(Ai + (size_t)s * n + a0, W, t, w);
-            /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c) */
+            /* Обновляем локальную часть A22: A22 <- A22 - L21 * U12. */
             for (int j = k + 1; j < N; j++) {
                 int c0 = j * alpha, m = END(j) - c0;
                 for (int s = 0; s < h; s++) {
@@ -81,7 +73,7 @@ void block_lu_mpi(int n, int alpha, double *A)
     free(W);
 }
 
-/* Раздать блочные строки A0 (процесс 0) по локальным массивам A. Вне замера. */
+/* Раздача строк с процесса 0 выполняется до начала замера. */
 static void scatter_rows(int n, int alpha, const double *A0, double *A)
 {
     int N = (n + alpha - 1) / alpha;
@@ -98,7 +90,7 @@ static void scatter_rows(int n, int alpha, const double *A0, double *A)
     }
 }
 
-/* Собрать разложение на процессе 0, чтобы проверить решение. Вне замера. */
+/* Собираем факторы на процессе 0 для проверки решения после замера. */
 static void gather_rows(int n, int alpha, const double *A, double *LU)
 {
     int N = (n + alpha - 1) / alpha;

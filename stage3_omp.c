@@ -1,10 +1,4 @@
-/*
- * Этап 3. OpenMP: блочное LU-разложение с GAXPY-панелью.
- * Параллельные циклы помечены #pragma omp parallel for; итерации между
- * потоками распределяет сама OpenMP (schedule(static)), без ручного деления
- * по номеру потока. Число потоков задаёт OMP_NUM_THREADS.
- * Сборка и запуск — README.md; алгоритм и результаты — docs/03_openmp.md.
- */
+/* Блочное LU-разложение с GAXPY-панелью и автоматическим распределением циклов OpenMP. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -14,7 +8,6 @@
 #define ALPHA 32
 #define REPS  3
 
-/* omp_get_wtime в MinGW GCC 9.2 имеет разрешение около 1 мс. */
 #ifdef _WIN32
 #include <windows.h>
 static double wtime(void)
@@ -43,9 +36,7 @@ static inline void saxpy(int m, double s, const double *restrict x, double *rest
 #define ROW(i) (A + (size_t)(i) * n)
 #define END(i) ((i) * alpha + alpha < n ? (i) * alpha + alpha : n)
 
-/* A (n x n, по строкам) заменяется на LU без выбора ведущего элемента.
- * Диагональная часть панели вычисляется последовательно. Нижние строки
- * независимы после получения U11. Параллельные циклы завершаются барьером. */
+/* После каждого параллельного цикла неявный барьер гарантирует готовность данных. */
 void block_lu(int n, int alpha, double *A)
 {
     int N = (n + alpha - 1) / alpha;
@@ -56,13 +47,14 @@ void block_lu(int n, int alpha, double *A)
         int w = a1 - a0;
         double *diagonal = ROW(a0) + a0;
 
-        /* 1–2. GAXPY-панель: сначала L11 и U11, затем независимые строки L21. */
+        /* После вычисления U11 каждая нижняя строка панели зависит только от U11
+         * и ранее вычисленных элементов той же строки. */
         gaxpy_panel(diagonal, n, w, w);
         #pragma omp parallel for schedule(static)
         for (int s = a1; s < n; s++)
             gaxpy_panel_row(ROW(s) + a0, diagonal, n, w);
 
-        /* 3. L(a,a) U(a,c) = A(a,c): блоки блочной строки независимы */
+        /* L11 * U12 = A12. Потоки обрабатывают разные блоки столбцов U12. */
         #pragma omp parallel for schedule(static)
         for (int j = k + 1; j < N; j++) {
             int c0 = j * alpha, m = END(j) - c0;
@@ -71,7 +63,7 @@ void block_lu(int n, int alpha, double *A)
                     saxpy(m, ROW(s)[l], ROW(l) + c0, ROW(s) + c0);
         }
 
-        /* 4. A'(b,c) = A(b,c) - L(b,a) U(a,c): пары блоков (i, j) независимы */
+        /* A22 <- A22 - L21 * U12. Каждая пара (i, j) задаёт отдельный блок A22. */
         #pragma omp parallel for collapse(2) schedule(static)
         for (int i = k + 1; i < N; i++)
             for (int j = k + 1; j < N; j++) {
