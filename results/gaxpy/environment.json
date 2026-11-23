@@ -1,0 +1,17 @@
+{
+  "source_commit": "fdfae87e3eb7ce50f02d93d5012957447d59bf22",
+  "date": "2026-11-24",
+  "platform": "Linux x86-64",
+  "cpu": "Intel Core i5-12450H, 8 cores / 12 logical CPUs",
+  "cpu_governor": "powersave",
+  "cpu_affinity": "no explicit binding",
+  "compiler": "GCC 16.2.1",
+  "mpi": "MPICH 5.0.2, single host",
+  "build": "sh build.sh",
+  "run": "OMP_DYNAMIC=FALSE python -u plots.py",
+  "plot_title_edit": "The lab 1 graph title names the GAXPY panel with no algorithm number.",
+  "alpha": 32,
+  "seed": 12345,
+  "repetitions": 3,
+  "time_statistic": "minimum"
+}
